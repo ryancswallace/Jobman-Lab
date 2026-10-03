@@ -1,0 +1,32 @@
+---
+host_tools:
+  vagrant: 2.4.9
+  vagrant_parallels: 2.4.9
+  packer: 1.16.0
+  packer_parallels: 1.2.8
+  ansible: 14.3.1
+  ansible_core: 2.21.3
+
+images:
+  alma_box: almalinux/9
+  alma_box_version: 9.8.20260810
+  alma_box_provider: parallels
+  alma_box_architecture: arm64
+  alma_box_sha256: 8f10c585e8ed38738dd3150ee06c45206c1ebf33444fe699fbc4f72d8be36380
+  windows_iso: /Users/rcw/Downloads/Win11_25H2_English_Arm64_v2.iso
+  windows_iso_sha256: 638aa2c88e94385b00f4f178d071e3df0b7d9e335577a83bd533b7f2eb65adf0
+
+guest_software:
+  go: 1.26.6
+  slurm: 25.05.8
+  slurm_url: https://download.schedmd.com/slurm/slurm-25.05.8.tar.bz2
+  slurm_sha256: 21ddc614396e7e0b1ba792841f182b4c5b24949b116cb509a3a650fc6fcc22b6
+  postgresql_container: docker.io/library/postgres@sha256:ac74e8c63c516b1f81fbaaede0663981399f80e42369431136b2455557f8547b
+  keycloak_container: quay.io/keycloak/keycloak@sha256:16d2321732b7daa01cae0f98d34e069869703c298b6751b0c83472603effc80f
+  mariadb: distro
+  almalinux_release: 9
+
+products:
+  jobman_repo: /Users/rcw/home/code/jobman
+  jobman_control_repo: /Users/rcw/home/code/jobman-control
+  jobman_diagnose_repo: /Users/rcw/home/code/jobman-diagnose

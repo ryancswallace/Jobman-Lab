@@ -1,0 +1,96 @@
+---
+lab:
+  name: jobman-lab
+  domain: lab.test
+  namespace: research
+  provider: parallels
+  network:
+    cidr: 10.77.0.0/24
+    gateway: 10.77.0.1
+  users:
+    - name: alice
+      uid: 21001
+      gid: 21001
+      display_name: Alice Lab
+      oidc_subject: 11111111-1111-4111-8111-111111111111
+      email: alice@jobman-lab.invalid
+    - name: bob
+      uid: 21002
+      gid: 21002
+      display_name: Bob Lab
+      oidc_subject: 22222222-2222-4222-8222-222222222222
+      email: bob@jobman-lab.invalid
+
+storage:
+  data:
+    server_path: /srv/lab/data
+    linux_path: /data
+    windows_drive: X
+    smb_share: data
+  shared:
+    server_path: /srv/lab/shared
+    linux_path: /shared
+    windows_drive: T
+    smb_share: shared
+  home:
+    server_path: /srv/lab/home
+    linux_path: /home
+    windows_drive: S
+    smb_share: home
+
+nodes:
+  storage01:
+    role: storage
+    group: core
+    address: 10.77.0.10
+    cpus: 2
+    memory_mb: 3072
+    data_disk_mb: 102400
+  pg01:
+    role: postgres
+    group: core
+    address: 10.77.0.20
+    cpus: 2
+    memory_mb: 2048
+  control01:
+    role: control
+    group: core
+    address: 10.77.0.21
+    cpus: 2
+    memory_mb: 4096
+  slurmctl01:
+    role: slurm_controller
+    group: core
+    address: 10.77.0.30
+    cpus: 2
+    memory_mb: 3072
+  submit01:
+    role: submit
+    group: core
+    address: 10.77.0.31
+    cpus: 2
+    memory_mb: 2048
+  compute01:
+    role: compute
+    group: core
+    address: 10.77.0.32
+    cpus: 2
+    memory_mb: 2048
+  compute02:
+    role: compute
+    group: core
+    address: 10.77.0.33
+    cpus: 2
+    memory_mb: 2048
+  linuxws01:
+    role: linux_workstation
+    group: full
+    address: 10.77.0.40
+    cpus: 2
+    memory_mb: 2048
+  winws01:
+    role: windows_workstation
+    group: full
+    address: 10.77.0.50
+    cpus: 4
+    memory_mb: 8192

@@ -1,0 +1,7 @@
+.DS_Store
+.lab/
+.vagrant/
+*.retry
+packer/output-*/
+packer/*.log
+ansible/inventory.generated.yml
