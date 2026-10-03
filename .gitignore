@@ -5,3 +5,5 @@
 packer/output-*/
 packer/*.log
 ansible/inventory.generated.yml
+__pycache__/
+*.pyc

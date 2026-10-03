@@ -189,8 +189,162 @@ a controlled `make destroy` and recreation.
 This is a local development lab, not a production deployment. It intentionally
 uses a private development CA, synthetic long-lived user passwords, Keycloak's
 development server, self-signed TLS for WinRM on the host-only network, and a
-single PostgreSQL role without database TLS. It still preserves the product
+single PostgreSQL role without database TLS before the optional Dashboard setup below. It still preserves the product
 boundaries under test: no database credentials reach clients or agents, agent
 private keys are generated target-side, agent journals are host-local, Control
 uses OIDC/TLS and agent mTLS, and bulk bytes remain in the shared artifact
 store.
+
+
+## Dashboard infrastructure
+
+`make configure-dashboard-infra` extends an **already running** `pg01`,
+`storage01`, and `control01`. It does not power on other VMs, run the full
+converge, recreate containers, or reset any database. It generates new synthetic
+Dashboard secrets and a PostgreSQL server certificate under ignored `.lab/`,
+then applies `ansible/dashboard-infra.yml` through a dedicated inventory.
+
+```sh
+make configure-dashboard-infra
+make check-dashboard-infra
+```
+
+The dedicated inventory obtains each VM's Ed25519 host public key through the
+local Parallels guest channel, binds it to the Vagrant-managed VM UUID, and uses
+strict SSH host verification. Subsequent unexpected VM or host-key changes fail
+closed. Existing inventories and their host-key files are not overwritten. The
+static CI check also preserves an existing host-key file.
+
+PostgreSQL continues to use its existing persistent container volume. The
+playbook enables TLS by reloading settings, preserving existing Control HBA
+rules and connections. Its additive HBA block requires TLS and SCRAM for the
+new roles, restricts each to its dedicated database and the isolated Lab
+network/loopback, and denies access to other databases. This compatibility
+choice leaves the original Control test role's plaintext connection working;
+it is not a production PostgreSQL policy.
+
+| Setting | Value |
+| --- | --- |
+| Database endpoint | `10.77.0.20:5432` (`pg01.lab.test`) |
+| Dashboard database | `jobman_dashboard` |
+| Migration identity | `jobman_dashboard_ddl` |
+| Runtime identity | `jobman_dashboard` |
+| TLS mode | `verify-full` |
+| Trusted host CA | `.lab/certs/lab-ca.crt` (use its absolute path) |
+| Private credential file | `.lab/credentials/dashboard.env` |
+| Runtime password key | `JOBMAN_LAB_DASHBOARD_PASSWORD` |
+| Migration password key | `JOBMAN_LAB_DASHBOARD_DDL_PASSWORD` |
+| Synthetic Control fixture DB/owner | `jobman_dashboard_control` |
+| Synthetic Control password key | `JOBMAN_LAB_DASHBOARD_CONTROL_PASSWORD` |
+
+None of these identities is a superuser, database/role creator or replication role.
+The fixture Control owner cannot connect to the original Control or Dashboard
+database. Its private verify-full DSN is installed on `control01` at
+`/etc/jobman-dashboard-lab/control-database-url` with mode `0600`.
+Only the migration identity owns the database and public schema. Apply Dashboard
+migrations as that identity, then rerun the PostgreSQL portion to grant runtime
+DML on the current tables and sequence use:
+
+```sh
+./scripts/configure-dashboard-infra.sh --limit pg01
+```
+
+The runtime role has no schema CREATE or role-assumption privilege. It receives
+only SELECT on the migration ledger. New tables get no automatic runtime grant:
+rerun the grant step after every migration. Credentials are never printed; load
+them through the ignored file, not command-line arguments or committed config.
+The generated leaf certificate expires after one year; initialization refuses
+an expired or incomplete pair rather than silently replacing trust or secrets.
+
+The log-reader account `jobman-dashboard-log` uses UID/GID `21901` on storage
+and Control. Named-user ACLs allow only traversal of `/srv/lab/data` and
+`/srv/lab/data/jobman`, then read/traversal of canonical namespace/job/execution
+prefixes within Alice's and Bob's stores. Read grants apply only to canonical
+`logs/{stdout,stderr}/<sequence>.chunk` objects. Existing nonlog file grants to
+this reader are removed; private directories retain a zero access mask.
+Per-user directory defaults provide the exact named reader inheritance while
+owning-group and other entries remain empty. Legacy paths with incompatible
+preexisting ACLs are excluded, preserving their prior owner/group rights;
+provisioning reports the exclusion count. Removing the reader preserves existing
+ACL masks; adding outer traversal fails if it would activate a previously masked
+execute grant for another identity. They require explicit operator
+migration before the strict producer policy can use them. The reader receives
+no write permission. The existing NFSv4.2 export retains `root_squash`. The remote reader
+uses `/data/jobman/<user>`; a reader on storage uses `/srv/lab/data/jobman/<user>`.
+
+**Producer integration is required for new private logs.** POSIX default ACLs
+are masked when a producer creates files with mode `0600` or directories with
+`0700`. The bounded check explicitly proves this denial. A store-specific,
+validated reader-policy opt-in must create published log objects with the
+appropriate ACL mask (`0640`/`0750`) while keeping owning-group/other access
+empty. The infrastructure does not change global producer modes, run a
+privileged ACL reconciler, or grant root/capability-based read bypasses. NFS
+clients expose `system.nfs4_acl`; the probe saves its native ACL representation
+for producer-policy validation.
+
+`make check-dashboard-infra` verifies host certificate/SAN checking, TLS-only
+role authentication, runtime DML without DDL, cross-database and role isolation,
+existing Control connection compatibility, inherited reader access, denied
+reader writes, denied Bob access to Alice's probe, and root-squash behavior.
+It creates unpredictable temporary table/directory names and removes only
+those probes, then saves non-secret ACL metadata in
+`.lab/dashboard/acl-probe.json`. It never prints log bytes or passwords.
+The check uses the existing PostgreSQL container's client for authenticated
+role checks and OpenSSL from the Mac for certificate/hostname checks; Dashboard
+integration tests separately establish the actual host pgx connection.
+
+The scoped Keycloak helper adds only `jobman-dashboard-api`,
+`jobman-dashboard-web` and `jobman-dashboard-native`, plus `dashboard-alice` and
+`dashboard-bob` in the existing `jobman-lab` realm. It refuses to adopt
+conflicting unmarked clients/users, and preserves the existing clients/users.
+The web client is confidential; native is public. Both require authorization
+code plus S256 PKCE and disable direct password, implicit and service-account
+flows. Exact redirects are `https://dashboard.lab.test:8443/auth/callback` and
+`jobman-dashboard-auth://callback`. The audience is `jobman-dashboard-api`, and
+`azp` identifies the client. Claim `directory_guid` is emitted from a single,
+admin-editable-only `dashboard_directory_guid` attribute; users cannot change
+that identity through self-service. The helper preserves the other realm user
+profile fields. This signed-claim configuration still requires actual
+application authorization-code/PKCE and directory integration acceptance.
+
+Public issuer/client/subject/GUID mappings are saved in
+`.lab/dashboard/oidc-public.json` and on Control at
+`/etc/jobman-dashboard-lab/oidc-public.json`. Synthetic secrets are appended only
+when missing to `.lab/credentials/dashboard.env` as
+`JOBMAN_LAB_DASHBOARD_WEB_SECRET`, `JOBMAN_LAB_DASHBOARD_ALICE_PASSWORD`, and
+`JOBMAN_LAB_DASHBOARD_BOB_PASSWORD`. Existing passwords are not rotated on rerun.
+The guest helper input is root-only `/etc/jobman-dashboard-lab/identity-input.json`.
+No host DNS edits are made. The operator/application fixture should arrange
+`dashboard.lab.test` resolution explicitly; current command checks can use
+`--resolve` without changing host networking. Control fixture ports `18443`
+and synthetic LDAPS `18636` are separate from existing Control `8080` and
+Keycloak `8443`. No long-lived fixture service is installed by this playbook.
+
+Offline regression tests run with `python3 scripts/test-dashboard-provisioning.py`
+and are included in `scripts/ci-check.sh`. They exercise canonical log scope,
+sequence bounds, exact callbacks and rejection of authentication-policy drift.
+A real Linux ARM64 producer test on Control's NFS mount additionally verified
+that its opt-in policy publishes readable logs while artifacts remain private;
+broker write, Bob read and root-squashed read were denied. That synthetic probe
+was removed afterward; these results do not install/enable a production policy.
+
+For rollback, first stop Dashboard processes and preserve its database backup.
+The original HBA is retained inside PGDATA as `pg_hba.conf.pre-dashboard`.
+An operator can restore that file and reload PostgreSQL, and return the three
+TLS settings to their prior configuration. Keep the dedicated database and
+roles for recovery rather than dropping data; revoke login while inactive.
+Remove only the named-reader ACL entries if decommissioning the reader; do not
+replace ownership, broadly chmod the data tree, or remove pre-existing data.
+Ansible and check results are synthetic Lab evidence, not corporate AD FS,
+production NFS, APNs, or managed-device acceptance.
+
+To repeat the real producer check, build Jobman's artifact test binary for
+Linux ARM64 with its `integration` build tag, then run:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 ./scripts/check-dashboard-producer.py /absolute/path/artifact.test
+```
+
+The test runs as Alice, creates a unique disposable NFS subtree, verifies actual
+content reads without printing bytes, cleans only its own files, and records
+the tested binary SHA-256 in `.lab/dashboard/producer-check.json`.

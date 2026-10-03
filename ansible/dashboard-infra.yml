@@ -1,0 +1,28 @@
+---
+- name: Add dedicated Dashboard PostgreSQL TLS and database identities
+  hosts: pg01
+  become: true
+  gather_facts: false
+  vars:
+    lab_dashboard_credentials: "{{ lab_root }}/.lab/credentials/dashboard.env"
+    lab_dashboard_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_PASSWORD', type='properties', file=lab_dashboard_credentials) }}"
+    lab_dashboard_ddl_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_DDL_PASSWORD', type='properties', file=lab_dashboard_credentials) }}"
+    lab_dashboard_control_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_CONTROL_PASSWORD', type='properties', file=lab_dashboard_credentials) }}"
+  roles:
+    - dashboard_postgres
+
+- name: Install consistent non-login log-reader identity and named-user ACLs
+  hosts: storage01:control01
+  become: true
+  gather_facts: false
+  roles:
+    - dashboard_log_reader
+
+- name: Configure only isolated Dashboard OIDC clients and private fixture credentials
+  hosts: control01
+  become: true
+  gather_facts: false
+  vars:
+    lab_dashboard_credentials: "{{ lab_root }}/.lab/credentials/dashboard.env"
+  roles:
+    - dashboard_identity
