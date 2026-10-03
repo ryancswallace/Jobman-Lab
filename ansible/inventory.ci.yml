@@ -1,0 +1,41 @@
+---
+all:
+  children:
+    linux:
+      hosts:
+        storage01: {}
+        pg01: {}
+        control01: {}
+        slurmctl01: {}
+        submit01: {}
+        compute01: {}
+        compute02: {}
+        linuxws01: {}
+    windows:
+      hosts:
+        winws01: {}
+    storage:
+      hosts:
+        storage01: {}
+    postgres:
+      hosts:
+        pg01: {}
+    control:
+      hosts:
+        control01: {}
+    slurm_controller:
+      hosts:
+        slurmctl01: {}
+    submit:
+      hosts:
+        submit01: {}
+    compute:
+      hosts:
+        compute01: {}
+        compute02: {}
+    linux_workstation:
+      hosts:
+        linuxws01: {}
+    windows_workstation:
+      hosts:
+        winws01: {}
