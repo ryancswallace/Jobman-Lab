@@ -1,0 +1,180 @@
+---
+- name: Install common operating-system packages
+  ansible.builtin.dnf:
+    name:
+      - bash-completion
+      - bind-utils
+      - ca-certificates
+      - chrony
+      - cifs-utils
+      - curl
+      - firewalld
+      - jq
+      - nfs-utils
+      - openssh-clients
+      - openssh-server
+      - policycoreutils-python-utils
+      - rsync
+      - tar
+      - unzip
+    state: present
+
+- name: Configure the lab time hierarchy
+  ansible.builtin.copy:
+    dest: /etc/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% if inventory_hostname == 'storage01' %}
+      pool 2.almalinux.pool.ntp.org iburst
+      allow {{ lab_network_cidr }}
+      {% else %}
+      server {{ lab_nodes.storage01.address }} iburst prefer minpoll 0 maxpoll 4
+      {% endif %}
+      driftfile /var/lib/chrony/drift
+      makestep 1.0 -1
+      rtcsync
+      keyfile /etc/chrony.keys
+      ntsdumpdir /var/lib/chrony
+      leapsectz right/UTC
+      logdir /var/log/chrony
+  notify: Restart Chrony
+
+- name: Start host services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - chronyd
+    - firewalld
+    - sshd
+
+- name: Trust all traffic from the isolated host-only lab network
+  ansible.posix.firewalld:
+    zone: trusted
+    source: "{{ lab_network_cidr }}"
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Apply time-service configuration before creating certificates or jobs
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Linux clock to synchronize
+  ansible.builtin.command:
+    argv:
+      - chronyc
+      - waitsync
+      - "60"
+      - "1.0"
+      - "0.0"
+      - "2"
+  changed_when: false
+
+- name: Enforce key-only OpenSSH authentication
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/40-jobman-lab.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+  notify: Restart OpenSSH
+
+- name: Remove the obsolete late-sorting OpenSSH lab policy
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/50-jobman-lab.conf
+    state: absent
+  notify: Restart OpenSSH
+
+- name: Allow OpenSSH to use shared NFS home directories
+  ansible.posix.seboolean:
+    name: use_nfs_home_dirs
+    state: true
+    persistent: true
+
+- name: Publish deterministic lab host mappings
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} JOBMAN LAB HOSTS"
+    block: |
+      {% for name, node in lab_nodes.items() %}
+      {{ node.address }} {{ name }}.{{ lab_domain }} {{ name }}{% if name == 'control01' %} oidc.{{ lab_domain }}{% endif %} # managed lab host
+      {% endfor %}
+
+- name: Install the development CA
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/certs/lab-ca.crt"
+    dest: /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Refresh CA trust
+
+- name: Create the shared lab group
+  ansible.builtin.group:
+    name: labusers
+    gid: 20999
+    state: present
+
+- name: Create consistent per-host user groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid }}"
+    state: present
+  loop: "{{ lab_users }}"
+
+- name: Create consistent per-host users without local home contents
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    group: "{{ item.name }}"
+    groups: labusers
+    append: true
+    home: "/home/{{ item.name }}"
+    create_home: false
+    shell: /bin/bash
+    password: "{{ lab_key_only_password_hash }}"
+    password_lock: false
+    state: present
+  loop: "{{ lab_users }}"
+  no_log: true
+
+- name: Create storage mount points
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - /data
+    - /shared
+    - /home/alice
+    - /home/bob
+
+- name: Install Jobman client and agent binaries
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/artifacts/bin/linux-arm64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - jobman
+    - jobman-agent
+
+- name: Install a lab-wide OpenSSH client policy
+  ansible.builtin.copy:
+    dest: /etc/ssh/ssh_config.d/20-jobman-lab.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Host *.{{ lab_domain }} storage01 pg01 control01 slurmctl01 submit01 compute01 compute02 linuxws01 winws01
+          StrictHostKeyChecking accept-new
+          IdentitiesOnly yes
+          IdentityFile ~/.ssh/id_ed25519
+
+- name: Apply common handlers before dependent roles
+  ansible.builtin.meta: flush_handlers

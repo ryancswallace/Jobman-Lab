@@ -1,0 +1,22 @@
+[Unit]
+Description=Jobman per-user Slurm agent ({{ item.name }})
+Wants=network-online.target remote-fs.target
+After=network-online.target remote-fs.target
+
+[Service]
+User={{ item.name }}
+Group={{ item.name }}
+Environment=HOME=/home/{{ item.name }}
+ExecStart=/usr/local/bin/jobman-agent run --state-dir /var/lib/jobman-agent/{{ item.name }}/onprem-slurm --poll-interval 2s --artifact-store {{ lab_artifact_store }} --artifact-store-version {{ lab_artifact_store_version }} --artifact-root /data/jobman/{{ item.name }} --slurm-root /home/{{ item.name }}/.jobman/slurm --slurm-runner /shared/apps/jobman/jobman-agent
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Bind the NFS mount root rather than a path below a root-squashed user home.
+# Unix ownership still confines this unprivileged service to its own directory.
+ReadWritePaths=/var/lib/jobman-agent/{{ item.name }}/onprem-slurm /data/jobman/{{ item.name }} /home
+
+[Install]
+WantedBy=multi-user.target

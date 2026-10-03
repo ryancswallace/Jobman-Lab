@@ -1,0 +1,300 @@
+---
+- name: Install Control runtime dependencies
+  ansible.builtin.dnf:
+    name:
+      - podman
+    state: present
+
+- name: Create the Control service identity
+  ansible.builtin.user:
+    name: jobman-control
+    uid: 10001
+    system: true
+    home: /var/lib/jobman-control
+    create_home: true
+    shell: /sbin/nologin
+
+- name: Create Control and Keycloak configuration directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/jobman-control, owner: root, group: jobman-control, mode: "0750"}
+    - {path: /etc/jobman-control/tls, owner: root, group: jobman-control, mode: "0750"}
+    - {path: /etc/jobman-lab/keycloak, owner: "1000", group: "1000", mode: "0750"}
+    - {path: /etc/jobman-lab/keycloak/tls, owner: "1000", group: "1000", mode: "0750"}
+
+- name: Install the Jobman Control binary
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/artifacts/bin/linux-arm64/jobman-control"
+    dest: /usr/local/bin/jobman-control
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Jobman Control
+
+- name: Install Control TLS and agent CA material
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/certs/{{ item.src }}"
+    dest: "/etc/jobman-control/tls/{{ item.dest }}"
+    owner: root
+    group: jobman-control
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: control01.lab.test.crt, dest: server.crt, mode: "0644"}
+    - {src: control01.lab.test.key, dest: server.key, mode: "0640"}
+    - {src: agent-ca.crt, dest: agent-ca.crt, mode: "0644"}
+    - {src: agent-ca.key, dest: agent-ca.key, mode: "0640"}
+  notify: Restart Jobman Control
+
+- name: Install Keycloak TLS material
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/certs/{{ item.src }}"
+    dest: "/etc/jobman-lab/keycloak/tls/{{ item.dest }}"
+    owner: "1000"
+    group: "1000"
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: control01.lab.test.crt, dest: tls.crt, mode: "0444"}
+    - {src: control01.lab.test.key, dest: tls.key, mode: "0400"}
+  notify: Restart Keycloak
+
+- name: Render the synthetic Keycloak realm
+  ansible.builtin.template:
+    src: realm.json.j2
+    dest: /etc/jobman-lab/keycloak/realm.json
+    owner: "1000"
+    group: "1000"
+    mode: "0600"
+  no_log: true
+
+- name: Write the private Keycloak environment
+  ansible.builtin.copy:
+    dest: /etc/jobman-lab/keycloak.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      KC_BOOTSTRAP_ADMIN_USERNAME=labadmin
+      KC_BOOTSTRAP_ADMIN_PASSWORD={{ lab_keycloak_admin_password }}
+  no_log: true
+
+- name: Pull the pinned Keycloak ARM64 image
+  ansible.builtin.command: "podman pull {{ lab_keycloak_image }}"
+  register: keycloak_pull
+  changed_when: "'Copying blob' in keycloak_pull.stdout or 'Writing manifest' in keycloak_pull.stdout"
+
+- name: Inspect the Keycloak data volume
+  ansible.builtin.command: podman volume inspect jobman-keycloak-data
+  register: keycloak_volume
+  changed_when: false
+  failed_when: false
+
+- name: Create the Keycloak data volume
+  ansible.builtin.command: podman volume create jobman-keycloak-data
+  when: keycloak_volume.rc != 0
+
+- name: Inspect the Keycloak container
+  ansible.builtin.command: podman container inspect jobman-keycloak
+  register: keycloak_container
+  changed_when: false
+  failed_when: false
+
+- name: Create the Keycloak container
+  ansible.builtin.command:
+    argv:
+      - podman
+      - create
+      - --name
+      - jobman-keycloak
+      - --env-file
+      - /etc/jobman-lab/keycloak.env
+      - --publish
+      - 10.77.0.21:8443:8443
+      - --volume
+      - jobman-keycloak-data:/opt/keycloak/data
+      - --volume
+      - /etc/jobman-lab/keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro,Z
+      - --volume
+      - /etc/jobman-lab/keycloak/tls:/opt/keycloak/conf/tls:ro,Z
+      - "{{ lab_keycloak_image }}"
+      - start-dev
+      - --import-realm
+      - --http-enabled=false
+      - --https-port=8443
+      - --https-certificate-file=/opt/keycloak/conf/tls/tls.crt
+      - --https-certificate-key-file=/opt/keycloak/conf/tls/tls.key
+      - --hostname=https://oidc.lab.test:8443
+  when: keycloak_container.rc != 0
+  no_log: true
+
+- name: Install the Keycloak container service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/jobman-keycloak.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Jobman Lab Keycloak
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Restart=on-failure
+      TimeoutStartSec=180
+      TimeoutStopSec=70
+      ExecStart=/usr/bin/podman start -a jobman-keycloak
+      ExecStop=/usr/bin/podman stop -t 60 jobman-keycloak
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Start Keycloak
+  ansible.builtin.systemd_service:
+    name: jobman-keycloak
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Wait for the synthetic OIDC discovery document
+  ansible.builtin.uri:
+    url: "{{ lab_oidc_issuer }}/.well-known/openid-configuration"
+    ca_path: /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+    status_code: 200
+  register: oidc_ready
+  retries: 36
+  delay: 5
+  until: oidc_ready.status == 200
+
+- name: Reconcile synthetic Keycloak user profiles
+  block:
+    - name: Authenticate the in-container Keycloak administration client
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - --env
+          - "KC_CLI_PASSWORD={{ lab_keycloak_admin_password }}"
+          - jobman-keycloak
+          - /bin/sh
+          - -c
+          - >-
+            exec /opt/keycloak/bin/kcadm.sh config credentials
+            --config /tmp/jobman-lab-kcadm.config
+            --server http://127.0.0.1:8080
+            --realm master
+            --user labadmin
+            --password "$KC_CLI_PASSWORD"
+      changed_when: false
+
+    - name: Apply complete synthetic Keycloak user profiles
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - jobman-keycloak
+          - /opt/keycloak/bin/kcadm.sh
+          - update
+          - "users/{{ item.oidc_subject }}"
+          - --config
+          - /tmp/jobman-lab-kcadm.config
+          - --target-realm
+          - jobman-lab
+          - -s
+          - "email={{ item.email }}"
+          - -s
+          - emailVerified=true
+          - -s
+          - requiredActions=[]
+      loop: "{{ lab_users }}"
+      changed_when: true
+  always:
+    - name: Remove the temporary Keycloak administration session
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - jobman-keycloak
+          - rm
+          - -f
+          - /tmp/jobman-lab-kcadm.config
+      changed_when: false
+  no_log: true
+
+- name: Write the private Jobman Control environment
+  ansible.builtin.copy:
+    dest: /etc/jobman-control/jobman-control.env
+    owner: root
+    group: jobman-control
+    mode: "0640"
+    content: |
+      JOBMAN_CONTROL_DATABASE_URL=postgres://jobman_control:{{ lab_postgres_password }}@pg01.lab.test:5432/jobman_control?sslmode=disable
+      JOBMAN_CONTROL_AUTH_MODE=oidc
+      JOBMAN_CONTROL_OIDC_ISSUER={{ lab_oidc_issuer }}
+      JOBMAN_CONTROL_OIDC_AUDIENCE={{ lab_oidc_audience }}
+      JOBMAN_CONTROL_AGENT_TOKEN_KEY={{ lab_agent_token_key }}
+      JOBMAN_CONTROL_BOOTSTRAP_SUBJECT=11111111-1111-4111-8111-111111111111
+      JOBMAN_CONTROL_BOOTSTRAP_NAME=Alice Lab
+      JOBMAN_CONTROL_BOOTSTRAP_NAMESPACE={{ lab_namespace }}
+      JOBMAN_CONTROL_LISTEN=0.0.0.0:8080
+      JOBMAN_CONTROL_TLS_CERT_FILE=/etc/jobman-control/tls/server.crt
+      JOBMAN_CONTROL_TLS_KEY_FILE=/etc/jobman-control/tls/server.key
+      JOBMAN_CONTROL_AGENT_CA_CERT_FILE=/etc/jobman-control/tls/agent-ca.crt
+      JOBMAN_CONTROL_AGENT_CA_KEY_FILE=/etc/jobman-control/tls/agent-ca.key
+      JOBMAN_CONTROL_AGENT_STALE_AFTER=2m
+      JOBMAN_CONTROL_MIGRATE_ON_START=true
+  no_log: true
+  notify: Restart Jobman Control
+
+- name: Install the Jobman Control service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/jobman-control.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Jobman Control local lab
+      Wants=network-online.target jobman-keycloak.service
+      After=network-online.target jobman-keycloak.service
+
+      [Service]
+      User=jobman-control
+      Group=jobman-control
+      EnvironmentFile=/etc/jobman-control/jobman-control.env
+      ExecStart=/usr/local/bin/jobman-control
+      Restart=on-failure
+      RestartSec=2s
+      NoNewPrivileges=true
+      PrivateTmp=true
+      ProtectSystem=strict
+      ProtectHome=true
+      ReadWritePaths=/var/lib/jobman-control
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart Jobman Control
+
+- name: Start Jobman Control
+  ansible.builtin.systemd_service:
+    name: jobman-control
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Apply Control handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Jobman Control readiness
+  ansible.builtin.uri:
+    url: "{{ lab_control_endpoint }}/readyz"
+    ca_path: /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+    status_code: 200
+  register: control_ready
+  retries: 36
+  delay: 5
+  until: control_ready.status == 200

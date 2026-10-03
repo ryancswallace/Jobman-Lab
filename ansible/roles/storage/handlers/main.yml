@@ -1,0 +1,9 @@
+---
+- name: Reload NFS exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+
+- name: Restart Samba
+  ansible.builtin.systemd_service:
+    name: smb
+    state: restarted

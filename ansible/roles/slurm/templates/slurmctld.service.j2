@@ -1,0 +1,16 @@
+[Unit]
+Description=Slurm controller daemon
+Wants=network-online.target munge.service slurmdbd.service
+After=network-online.target munge.service slurmdbd.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+ExecStart=/opt/slurm/current/sbin/slurmctld -D
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RuntimeDirectory=slurmctld
+
+[Install]
+WantedBy=multi-user.target

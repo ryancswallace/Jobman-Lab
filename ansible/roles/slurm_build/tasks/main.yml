@@ -1,0 +1,99 @@
+---
+- name: Enable AlmaLinux build repositories
+  ansible.builtin.dnf:
+    name:
+      - dnf-plugins-core
+      - epel-release
+    state: present
+
+- name: Enable the CodeReady Builder repository
+  ansible.builtin.command: dnf config-manager --set-enabled crb
+  register: crb_enable
+  changed_when: "'enabled' in crb_enable.stdout"
+
+- name: Install Slurm build dependencies
+  ansible.builtin.dnf:
+    name:
+      - '@Development Tools'
+      - bzip2-devel
+      - dbus-devel
+      - hwloc-devel
+      - json-c-devel
+      - mariadb-connector-c-devel
+      - munge-devel
+      - numactl-devel
+      - pam-devel
+      - readline-devel
+      - rpm-build
+    state: present
+
+- name: Copy the pinned Slurm source archive
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/cache/slurm-{{ lab_slurm_version }}.tar.bz2"
+    dest: "/var/tmp/slurm-{{ lab_slurm_version }}.tar.bz2"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verify the Slurm source archive
+  ansible.builtin.stat:
+    path: "/var/tmp/slurm-{{ lab_slurm_version }}.tar.bz2"
+    checksum_algorithm: sha256
+  register: slurm_source_stat
+
+- name: Require the pinned Slurm source checksum
+  ansible.builtin.assert:
+    that:
+      - slurm_source_stat.stat.checksum == lab_slurm_sha256
+
+- name: Extract Slurm source
+  ansible.builtin.unarchive:
+    src: "/var/tmp/slurm-{{ lab_slurm_version }}.tar.bz2"
+    dest: /var/tmp
+    remote_src: true
+    creates: "/var/tmp/slurm-{{ lab_slurm_version }}/configure"
+
+- name: Configure Slurm
+  ansible.builtin.command:
+    argv:
+      - ./configure
+      - "--prefix=/opt/slurm/{{ lab_slurm_version }}"
+      - --sysconfdir=/etc/slurm
+      - --localstatedir=/var
+      - --with-munge
+      - --with-hwloc
+      - --with-json
+      - --enable-pam
+  args:
+    chdir: "/var/tmp/slurm-{{ lab_slurm_version }}"
+    creates: "/var/tmp/slurm-{{ lab_slurm_version }}/config.status"
+
+- name: Build Slurm
+  ansible.builtin.command: make -j2
+  args:
+    chdir: "/var/tmp/slurm-{{ lab_slurm_version }}"
+    creates: "/var/tmp/slurm-{{ lab_slurm_version }}/src/slurmctld/slurmctld"
+
+- name: Install Slurm to its versioned prefix
+  ansible.builtin.command: make install
+  args:
+    chdir: "/var/tmp/slurm-{{ lab_slurm_version }}"
+    creates: "/opt/slurm/{{ lab_slurm_version }}/sbin/slurmctld"
+
+- name: Inspect the storage-owned Slurm distribution directory
+  ansible.builtin.stat:
+    path: /shared/apps/slurm
+  register: slurm_distribution_directory
+
+- name: Require the storage-owned Slurm distribution directory
+  ansible.builtin.assert:
+    that:
+      - slurm_distribution_directory.stat.isdir | default(false)
+
+- name: Publish the pinned Slurm ARM64 installation
+  ansible.builtin.command: >-
+    tar -C /opt/slurm -czf /shared/apps/slurm/slurm-{{ lab_slurm_version }}-linux-arm64.tar.gz
+    {{ lab_slurm_version }}
+  args:
+    creates: "/shared/apps/slurm/slurm-{{ lab_slurm_version }}-linux-arm64.tar.gz"
+  become_user: alice

@@ -1,0 +1,234 @@
+---
+- name: Install storage service packages
+  ansible.builtin.dnf:
+    name:
+      - parted
+      - samba
+      - samba-client
+      - xfsprogs
+    state: present
+
+- name: Locate the dedicated non-root storage disk
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsblk -dn -o PATH,TYPE | awk '$2 == "disk" && $1 != "/dev/sda" {print $1; exit}'
+  args:
+    executable: /bin/bash
+  register: storage_disk_result
+  changed_when: false
+
+- name: Require the dedicated storage disk
+  ansible.builtin.assert:
+    that:
+      - storage_disk_result.stdout | length > 0
+      - storage_disk_result.stdout != '/dev/sda'
+    fail_msg: The storage VM does not have its expected dedicated data disk.
+
+- name: Partition the dedicated storage disk
+  community.general.parted:
+    device: "{{ storage_disk_result.stdout }}"
+    number: 1
+    label: gpt
+    part_start: 1MiB
+    part_end: 100%
+    state: present
+
+- name: Create the storage filesystem
+  community.general.filesystem:
+    dev: "{{ storage_disk_result.stdout }}1"
+    fstype: xfs
+
+- name: Mount the dedicated storage filesystem
+  ansible.posix.mount:
+    path: /srv/lab
+    src: "{{ storage_disk_result.stdout }}1"
+    fstype: xfs
+    opts: defaults
+    state: mounted
+
+- name: Map shared-home SELinux labels to the standard home policy
+  community.general.sefcontext:
+    target: /srv/lab/home
+    substitute: /home
+    state: present
+
+- name: Label SMB data and shared storage for Samba
+  community.general.sefcontext:
+    target: "{{ item }}"
+    setype: samba_share_t
+    state: present
+  loop:
+    - /srv/lab
+    - /srv/lab/(data|shared)(/.*)?
+
+- name: Allow Samba to serve the synthetic users' home directories
+  ansible.posix.seboolean:
+    name: samba_enable_home_dirs
+    state: true
+    persistent: true
+
+- name: Create exported storage roots
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /srv/lab/data, owner: root, group: labusers, mode: "2775"}
+    - {path: /srv/lab/shared, owner: root, group: labusers, mode: "2775"}
+    - {path: /srv/lab/home, owner: root, group: root, mode: "0755"}
+    - {path: /srv/lab/data/jobman, owner: root, group: labusers, mode: "2775"}
+    - {path: /srv/lab/shared/apps, owner: root, group: labusers, mode: "2775"}
+    - {path: /srv/lab/shared/apps/jobman, owner: root, group: labusers, mode: "2775"}
+    - {path: /srv/lab/shared/apps/slurm, owner: root, group: labusers, mode: "2775"}
+
+- name: Create user-owned home and artifact directories
+  ansible.builtin.file:
+    path: "{{ item.1 }}"
+    state: directory
+    owner: "{{ item.0.name }}"
+    group: "{{ item.0.name }}"
+    mode: "0700"
+  loop: "{{ lab_users | product(['/srv/lab/home/alice', '/srv/lab/home/bob']) | list }}"
+  when: item.1 == '/srv/lab/home/' + item.0.name
+
+- name: Create user-owned Jobman artifact roots
+  ansible.builtin.file:
+    path: "/srv/lab/data/jobman/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ lab_users }}"
+
+- name: Create private SSH directories on shared homes
+  ansible.builtin.file:
+    path: "/srv/lab/home/{{ item.name }}/.ssh"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ lab_users }}"
+
+- name: Install shared user private keys
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/ssh/users/{{ item.name }}"
+    dest: "/srv/lab/home/{{ item.name }}/.ssh/id_ed25519"
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0600"
+  loop: "{{ lab_users }}"
+
+- name: Install shared user public and authorized keys
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/ssh/users/{{ item.0.name }}.pub"
+    dest: "/srv/lab/home/{{ item.0.name }}/.ssh/{{ item.1 }}"
+    owner: "{{ item.0.name }}"
+    group: "{{ item.0.name }}"
+    mode: "0600"
+  loop: "{{ lab_users | product(['id_ed25519.pub', 'authorized_keys']) | list }}"
+
+- name: Create user Jobman and Slurm directories
+  ansible.builtin.file:
+    path: "/srv/lab/home/{{ item.0.name }}/{{ item.1 }}"
+    state: directory
+    owner: "{{ item.0.name }}"
+    group: "{{ item.0.name }}"
+    mode: "0700"
+  loop: "{{ lab_users | product(['.config/jobman', '.jobman/slurm']) | list }}"
+
+- name: Install the Jobman development CA in shared homes
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/certs/lab-ca.crt"
+    dest: "/srv/lab/home/{{ item.name }}/.config/jobman/lab-ca.crt"
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0600"
+  loop: "{{ lab_users }}"
+
+- name: Configure each Linux user's Jobman shared profile
+  ansible.builtin.copy:
+    dest: "/srv/lab/home/{{ item.name }}/.config/jobman/jobman.yml"
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0600"
+    content: |
+      shared:
+        current_profile: lab
+        profiles:
+          lab:
+            endpoint: {{ lab_control_endpoint }}
+            namespace: {{ lab_namespace }}
+            token_file: /home/{{ item.name }}/.config/jobman/control-token
+            ca_file: /home/{{ item.name }}/.config/jobman/lab-ca.crt
+            artifact_roots:
+              {{ lab_artifact_store }}:
+                version: {{ lab_artifact_store_version }}
+                path: /data/jobman/{{ item.name }}
+  loop: "{{ lab_users }}"
+
+- name: Apply SELinux labels to shared storage
+  ansible.builtin.command: restorecon -RFv /srv/lab/home
+  register: shared_home_relabel
+  changed_when: shared_home_relabel.stdout | trim | length > 0
+
+- name: Apply Samba SELinux labels to data and shared storage
+  ansible.builtin.command: restorecon -RFv /srv/lab /srv/lab/data /srv/lab/shared
+  register: shared_storage_relabel
+  changed_when: shared_storage_relabel.stdout | trim | length > 0
+
+- name: Publish the shared Slurm runner at a commit-addressed path
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/artifacts/bin/linux-arm64/jobman-agent"
+    dest: "/srv/lab/shared/apps/jobman/jobman-agent"
+    owner: root
+    group: labusers
+    mode: "0755"
+
+- name: Configure NFS exports
+  ansible.builtin.template:
+    src: exports.j2
+    dest: /etc/exports.d/jobman-lab.exports
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NFS exports
+
+- name: Configure SMB3 shares
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: testparm -s %s
+  notify: Restart Samba
+
+- name: Check existing Samba users
+  ansible.builtin.command: "pdbedit -L -u {{ item.name }}"
+  loop: "{{ lab_users }}"
+  register: samba_user_checks
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create Samba users with synthetic lab passwords
+  ansible.builtin.command:
+    argv: [/usr/bin/smbpasswd, -s, -a, "{{ item.item.name }}"]
+    stdin: "{{ lab_user_passwords[item.item.name] }}\n{{ lab_user_passwords[item.item.name] }}\n"
+  loop: "{{ samba_user_checks.results }}"
+  when: item.rc != 0
+  no_log: true
+
+- name: Start storage services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - nfs-server
+    - smb
+
+- name: Apply storage handlers before clients mount
+  ansible.builtin.meta: flush_handlers

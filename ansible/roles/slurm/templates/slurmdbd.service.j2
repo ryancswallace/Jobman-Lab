@@ -1,0 +1,16 @@
+[Unit]
+Description=Slurm accounting daemon
+Wants=network-online.target munge.service mariadb.service
+After=network-online.target munge.service mariadb.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+ExecStart=/opt/slurm/current/sbin/slurmdbd -D
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RuntimeDirectory=slurmdbd
+
+[Install]
+WantedBy=multi-user.target

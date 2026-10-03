@@ -1,0 +1,28 @@
+---
+- name: Scan isolated lab SSH host keys from Linux
+  ansible.builtin.shell: |
+    set -euo pipefail
+    : > /tmp/jobman-lab-known-hosts
+    {% for name, node in lab_nodes.items() %}
+    ssh-keyscan -T 10 {{ name }}.{{ lab_domain }} >> /tmp/jobman-lab-known-hosts
+    {% endfor %}
+    sort -u /tmp/jobman-lab-known-hosts
+  args:
+    executable: /bin/bash
+  register: lab_host_keys
+  changed_when: false
+  delegate_to: submit01
+  run_once: true
+  retries: 3
+  delay: 2
+  until: lab_host_keys.rc == 0
+
+- name: Install the lab-wide OpenSSH known-hosts file
+  ansible.builtin.copy:
+    dest: /etc/ssh/ssh_known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ lab_host_keys.stdout }}\n"
+  become: true
+  when: inventory_hostname in groups['linux']

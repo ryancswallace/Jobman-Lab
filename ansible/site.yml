@@ -1,0 +1,53 @@
+---
+- name: Establish common AlmaLinux host configuration
+  hosts: linux
+  become: true
+  roles:
+    - common
+
+- name: Configure the NFS and SMB storage appliance
+  hosts: storage
+  become: true
+  roles:
+    - storage
+
+- name: Mount shared storage on every Linux host
+  hosts: linux
+  become: true
+  roles:
+    - mounts
+
+- name: Configure PostgreSQL
+  hosts: postgres
+  become: true
+  roles:
+    - postgres
+
+- name: Configure Keycloak and Jobman Control
+  hosts: control
+  become: true
+  roles:
+    - control
+
+- name: Build the pinned Slurm distribution
+  hosts: slurm_controller
+  become: true
+  roles:
+    - slurm_build
+
+- name: Configure Slurm controller, clients, and compute nodes
+  hosts: linux
+  become: true
+  roles:
+    - slurm
+
+- name: Configure the Windows workstation
+  hosts: windows
+  roles:
+    - windows_workstation
+
+- name: Finalize cross-host trust and client profiles
+  hosts: all
+  gather_facts: false
+  roles:
+    - finalize

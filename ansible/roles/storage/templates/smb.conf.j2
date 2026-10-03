@@ -1,0 +1,37 @@
+[global]
+   workgroup = WORKGROUP
+   server string = Jobman Lab Storage
+   security = user
+   map to guest = never
+   server min protocol = SMB3_00
+   smb encrypt = desired
+   hosts allow = 127. 10.77.0.
+   hosts deny = 0.0.0.0/0
+   log file = /var/log/samba/%m.log
+   max log size = 1000
+
+[data]
+   path = /srv/lab/data
+   browseable = yes
+   read only = no
+   valid users = @labusers
+   force group = labusers
+   create mask = 0660
+   directory mask = 2770
+
+[shared]
+   path = /srv/lab/shared
+   browseable = yes
+   read only = no
+   valid users = @labusers
+   force group = labusers
+   create mask = 0660
+   directory mask = 2770
+
+[home]
+   path = /srv/lab/home
+   browseable = no
+   read only = no
+   valid users = @labusers
+   create mask = 0600
+   directory mask = 0700

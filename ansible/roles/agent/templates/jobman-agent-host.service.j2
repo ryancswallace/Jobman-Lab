@@ -1,0 +1,20 @@
+[Unit]
+Description=Jobman per-user host agent ({{ item.name }})
+Wants=network-online.target remote-fs.target
+After=network-online.target remote-fs.target
+
+[Service]
+User={{ item.name }}
+Group={{ item.name }}
+Environment=HOME=/home/{{ item.name }}
+ExecStart=/usr/local/bin/jobman-agent run --state-dir /var/lib/jobman-agent/{{ item.name }}/linux-workstation --poll-interval 2s --artifact-store {{ lab_artifact_store }} --artifact-store-version {{ lab_artifact_store_version }} --artifact-root /data/jobman/{{ item.name }}
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jobman-agent/{{ item.name }}/linux-workstation /data/jobman/{{ item.name }}
+
+[Install]
+WantedBy=multi-user.target

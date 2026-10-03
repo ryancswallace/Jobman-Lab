@@ -1,0 +1,388 @@
+---
+- name: Configure the isolated Windows lab interface
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $desiredAddress = '{{ lab_nodes[inventory_hostname].address }}'
+      $prefixLength = {{ lab_network_cidr.split('/')[1] | int }}
+      $candidates = @(
+        Get-NetIPConfiguration | Where-Object {
+          $_.NetAdapter.Status -eq 'Up' -and -not $_.IPv4DefaultGateway
+        }
+      )
+      if ($candidates.Count -ne 1) {
+        throw "expected one active interface without a default gateway; found $($candidates.Count)"
+      }
+      $interfaceIndex = $candidates[0].InterfaceIndex
+      $current = @(
+        Get-NetIPAddress -InterfaceIndex $interfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      )
+      $desired = @($current | Where-Object {
+        $_.IPAddress -eq $desiredAddress -and $_.PrefixLength -eq $prefixLength
+      })
+      if ($desired.Count -eq 0) {
+        Set-NetIPInterface -InterfaceIndex $interfaceIndex -AddressFamily IPv4 -Dhcp Disabled
+        $current | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+        New-NetIPAddress -InterfaceIndex $interfaceIndex -IPAddress $desiredAddress -PrefixLength $prefixLength | Out-Null
+        $Ansible.Changed = $true
+      }
+
+- name: Set the Windows workstation hostname
+  ansible.windows.win_hostname:
+    name: winws01
+  register: windows_hostname
+
+- name: Add deterministic Windows host mappings
+  ansible.windows.win_hosts:
+    state: present
+    canonical_name: "{{ item.key }}.{{ lab_domain }}"
+    ip_address: "{{ item.value.address }}"
+    aliases: "{{ ([item.key] + (['oidc.' + lab_domain] if item.key == 'control01' else [])) }}"
+  loop: "{{ lab_nodes | dict2items }}"
+
+- name: Synchronize Windows time from the isolated storage peer
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $peer = 'storage01.{{ lab_domain }},0x8'
+      $parameters = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
+      $configuration = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Config'
+
+      if ((Get-ItemPropertyValue -Path $parameters -Name Type) -ne 'NTP') {
+        Set-ItemProperty -Path $parameters -Name Type -Value 'NTP'
+        $Ansible.Changed = $true
+      }
+      if ((Get-ItemPropertyValue -Path $parameters -Name NtpServer) -ne $peer) {
+        Set-ItemProperty -Path $parameters -Name NtpServer -Value $peer
+        $Ansible.Changed = $true
+      }
+      foreach ($name in @('MaxPosPhaseCorrection', 'MaxNegPhaseCorrection')) {
+        if ((Get-ItemPropertyValue -Path $configuration -Name $name) -ne [uint32]::MaxValue) {
+          Set-ItemProperty -Path $configuration -Name $name -Type DWord -Value ([uint32]::MaxValue)
+          $Ansible.Changed = $true
+        }
+      }
+
+      $service = Get-Service -Name W32Time
+      if ($service.StartType -ne 'Automatic') {
+        Set-Service -Name W32Time -StartupType Automatic
+        $Ansible.Changed = $true
+      }
+      if ($Ansible.Changed -or $service.Status -ne 'Running') {
+        Restart-Service -Name W32Time -Force
+      }
+
+      $deadline = [DateTime]::UtcNow.AddMinutes(2)
+      do {
+        & w32tm.exe /resync /rediscover | Out-Null
+        $resyncExitCode = $LASTEXITCODE
+        if ($resyncExitCode -eq 0) {
+          break
+        }
+        Start-Sleep -Seconds 5
+      } while ([DateTime]::UtcNow -lt $deadline)
+      if ($resyncExitCode -ne 0) {
+        throw "Windows time synchronization failed with exit code $resyncExitCode"
+      }
+
+      $source = (& w32tm.exe /query /source).Trim()
+      if ($LASTEXITCODE -ne 0 -or
+          ($source -notlike 'storage01*' -and $source -ne '{{ lab_nodes.storage01.address }}')) {
+        throw "Windows time source is not the isolated storage peer"
+      }
+
+- name: Create synthetic Windows users
+  ansible.windows.win_user:
+    name: "{{ item.name }}"
+    fullname: "{{ item.display_name }}"
+    password: "{{ lab_user_passwords[item.name] }}"
+    password_never_expires: true
+    user_cannot_change_password: false
+    groups:
+      - Users
+    groups_action: add
+    state: present
+  loop: "{{ lab_users }}"
+  no_log: true
+
+- name: Allow synthetic users to run scheduled Jobman tasks
+  ansible.windows.win_user_right:
+    name: SeBatchLogonRight
+    users: "{{ lab_users | map(attribute='name') | list }}"
+    action: add
+
+- name: Create and resolve synthetic Windows user profiles
+  ansible.windows.win_user_profile:
+    username: "{{ item.name }}"
+    name: "{{ item.name }}"
+    state: present
+  loop: "{{ lab_users }}"
+  register: windows_user_profiles
+
+- name: Record registered Windows user profile paths
+  ansible.builtin.set_fact:
+    windows_user_profile_paths: >-
+      {{ windows_user_profile_paths | default({}) |
+         combine({item.item.name: item.path}) }}
+  loop: "{{ windows_user_profiles.results }}"
+
+- name: Install Windows OpenSSH capabilities
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      foreach ($name in @('OpenSSH.Client~~~~0.0.1.0', 'OpenSSH.Server~~~~0.0.1.0')) {
+        $capability = Get-WindowsCapability -Online -Name $name
+        if ($capability.State -ne 'Installed') {
+          # Windows Update feature downloads can be denied in a remote WinRM
+          # process. Run the narrowly scoped DISM operation as Local System.
+          $taskName = "Jobman Lab Install $($name.Split('.')[1].Split('~')[0])"
+          $arguments = "/Online /Add-Capability /CapabilityName:$name /NoRestart"
+          $action = New-ScheduledTaskAction -Execute 'dism.exe' -Argument $arguments
+          Register-ScheduledTask -TaskName $taskName -Action $action -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+          try {
+            Start-ScheduledTask -TaskName $taskName
+            $deadline = [DateTime]::UtcNow.AddMinutes(20)
+            do {
+              Start-Sleep -Seconds 5
+              $task = Get-ScheduledTask -TaskName $taskName
+            } while ($task.State -eq 'Running' -and [DateTime]::UtcNow -lt $deadline)
+            if ($task.State -eq 'Running') {
+              throw "timed out installing Windows capability $name"
+            }
+            $result = (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult
+            if ($result -ne 0) {
+              throw "failed installing Windows capability $name (DISM exit code $result)"
+            }
+            $capability = Get-WindowsCapability -Online -Name $name
+            if ($capability.State -ne 'Installed') {
+              throw "Windows capability $name is $($capability.State) after DISM completed"
+            }
+            $Ansible.Changed = $true
+          }
+          finally {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+          }
+        }
+      }
+
+- name: Enable the Windows SSH server
+  ansible.windows.win_service:
+    name: sshd
+    start_mode: auto
+    state: started
+
+- name: Permit SSH through Windows Firewall
+  community.windows.win_firewall_rule:
+    name: Jobman Lab OpenSSH
+    localport: 22
+    action: allow
+    direction: in
+    protocol: tcp
+    profiles:
+      - domain
+      - private
+      - public
+    state: present
+    enabled: true
+
+- name: Require public-key SSH authentication
+  community.windows.win_lineinfile:
+    path: C:\ProgramData\ssh\sshd_config
+    regexp: "^#?{{ item.key }}\\s+"
+    line: "{{ item.key }} {{ item.value }}"
+  loop:
+    - {key: PubkeyAuthentication, value: 'yes'}
+    - {key: PasswordAuthentication, value: 'no'}
+  notify: Restart Windows SSH
+
+- name: Create Jobman program directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - C:\Program Files\Jobman Lab\bin
+    - C:\ProgramData\Jobman Lab
+
+- name: Stop running Windows Jobman agents before replacing binaries
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $tasks = @(Get-ScheduledTask -TaskName 'Jobman Agent - *' -ErrorAction SilentlyContinue)
+      foreach ($task in $tasks) {
+        if ($task.State -eq 'Running') {
+          Stop-ScheduledTask -InputObject $task
+          $Ansible.Changed = $true
+        }
+      }
+  register: windows_agent_tasks_stopped
+
+- name: Install Windows Jobman binaries
+  ansible.windows.win_copy:
+    src: "{{ lab_root }}/.lab/artifacts/bin/windows-arm64/{{ item }}"
+    dest: "C:\\Program Files\\Jobman Lab\\bin\\{{ item }}"
+  loop:
+    - jobman.exe
+    - jobman-agent.exe
+
+- name: Restart Windows Jobman agents after replacing binaries
+  ansible.windows.win_powershell:
+    script: |
+      $tasks = @(Get-ScheduledTask -TaskName 'Jobman Agent - *' -ErrorAction SilentlyContinue)
+      foreach ($task in $tasks) {
+        Start-ScheduledTask -InputObject $task
+      }
+      $Ansible.Changed = $tasks.Count -gt 0
+  when: windows_agent_tasks_stopped.changed
+
+- name: Add Jobman to the machine path
+  ansible.windows.win_path:
+    elements:
+      - C:\Program Files\Jobman Lab\bin
+    scope: machine
+    state: present
+
+- name: Create user profile configuration directories
+  ansible.windows.win_file:
+    path: "{{ windows_user_profile_paths[item.0.name] }}\\{{ item.1 }}"
+    state: directory
+  loop: "{{ lab_users | product(['.ssh', 'AppData\\Roaming\\Jobman']) | list }}"
+
+- name: Install Windows user SSH private keys
+  ansible.windows.win_copy:
+    src: "{{ lab_root }}/.lab/ssh/users/{{ item.name }}"
+    dest: "{{ windows_user_profile_paths[item.name] }}\\.ssh\\id_ed25519"
+  loop: "{{ lab_users }}"
+  no_log: true
+
+- name: Install Windows user SSH public and authorized keys
+  ansible.windows.win_copy:
+    src: "{{ lab_root }}/.lab/ssh/users/{{ item.0.name }}.pub"
+    dest: "{{ windows_user_profile_paths[item.0.name] }}\\.ssh\\{{ item.1 }}"
+  loop: "{{ lab_users | product(['id_ed25519.pub', 'authorized_keys']) | list }}"
+
+- name: Install Windows user SSH client policy
+  ansible.windows.win_copy:
+    dest: "{{ windows_user_profile_paths[item.name] }}\\.ssh\\config"
+    content: |
+      Host *.{{ lab_domain }} storage01 pg01 control01 slurmctl01 submit01 compute01 compute02 linuxws01 winws01
+          StrictHostKeyChecking accept-new
+          IdentitiesOnly yes
+          IdentityFile ~/.ssh/id_ed25519
+  loop: "{{ lab_users }}"
+
+- name: Restrict Windows SSH directory ACLs
+  ansible.windows.win_powershell:
+    script: |
+      $path = '{{ windows_user_profile_paths[item.name] }}\.ssh'
+      & icacls.exe $path /inheritance:r | Out-Null
+      & icacls.exe $path /grant:r '{{ item.name }}:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+      $Ansible.Changed = $true
+  loop: "{{ lab_users }}"
+
+- name: Install the Jobman development CA for Windows users
+  ansible.windows.win_copy:
+    src: "{{ lab_root }}/.lab/certs/lab-ca.crt"
+    dest: "{{ windows_user_profile_paths[item.name] }}\\AppData\\Roaming\\Jobman\\lab-ca.crt"
+  loop: "{{ lab_users }}"
+
+- name: Stage the Jobman development CA for import
+  ansible.windows.win_copy:
+    src: "{{ lab_root }}/.lab/certs/lab-ca.crt"
+    dest: C:\ProgramData\Jobman Lab\lab-ca.crt
+
+- name: Allow synthetic users to read the staged development CA
+  ansible.windows.win_acl:
+    path: C:\ProgramData\Jobman Lab\lab-ca.crt
+    user: BUILTIN\Users
+    rights: ReadAndExecute
+    type: allow
+    state: present
+
+- name: Import the Jobman development CA into the machine root store
+  ansible.windows.win_certificate_store:
+    path: C:\ProgramData\Jobman Lab\lab-ca.crt
+    store_location: LocalMachine
+    store_name: Root
+    state: present
+
+- name: Configure Windows Jobman shared profiles
+  ansible.windows.win_copy:
+    dest: "{{ windows_user_profile_paths[item.name] }}\\AppData\\Roaming\\Jobman\\jobman.yml"
+    content: |
+      shared:
+        current_profile: lab
+        profiles:
+          lab:
+            endpoint: {{ lab_control_endpoint }}
+            namespace: {{ lab_namespace }}
+            token_file: {{ windows_user_profile_paths[item.name] }}\AppData\Roaming\Jobman\control-token
+            ca_file: {{ windows_user_profile_paths[item.name] }}\AppData\Roaming\Jobman\lab-ca.crt
+            artifact_roots:
+              {{ lab_artifact_store }}:
+                version: {{ lab_artifact_store_version }}
+                path: X:\jobman\{{ item.name }}
+  loop: "{{ lab_users }}"
+
+- name: Install per-user SMB drive mapping scripts
+  ansible.windows.win_copy:
+    dest: "C:\\ProgramData\\Jobman Lab\\map-drives-{{ item.name }}.cmd"
+    content: |
+      @echo off
+      net use X: \\storage01.lab.test\data /persistent:yes
+      net use T: \\storage01.lab.test\shared /persistent:yes
+      net use S: \\storage01.lab.test\home\{{ item.name }} /persistent:yes
+  loop: "{{ lab_users }}"
+
+- name: Map SMB drives at each synthetic user's logon
+  community.windows.win_scheduled_task:
+    name: "Jobman Lab Map Drives - {{ item.name }}"
+    description: Map the isolated Jobman lab SMB shares.
+    actions:
+      - path: cmd.exe
+        arguments: "/c \"C:\\ProgramData\\Jobman Lab\\map-drives-{{ item.name }}.cmd\""
+    triggers:
+      - type: logon
+        user_id: "{{ item.name }}"
+    username: "{{ item.name }}"
+    logon_type: interactive_token
+    run_level: limited
+    state: present
+    enabled: true
+  loop: "{{ lab_users }}"
+
+- name: Install Windows Slurm-over-SSH command wrappers
+  ansible.windows.win_copy:
+    dest: "C:\\Program Files\\Jobman Lab\\bin\\{{ item }}.cmd"
+    content: |
+      @echo off
+      ssh submit01.lab.test /usr/bin/{{ item }} %*
+  loop:
+    - sacct
+    - sbatch
+    - scancel
+    - sinfo
+    - squeue
+
+- name: Ensure WinRM recovers after first-boot Windows servicing
+  community.windows.win_scheduled_task:
+    name: Jobman Lab Start WinRM
+    description: Start WinRM after lab boot and Windows capability servicing.
+    actions:
+      - path: powershell.exe
+        arguments: -NoProfile -NonInteractive -Command "Start-Service -Name WinRM"
+    triggers:
+      - type: boot
+        delay: PT15S
+    username: SYSTEM
+    logon_type: service_account
+    run_level: highest
+    state: present
+    enabled: true
+
+- name: Reboot Windows after hostname or capability changes
+  ansible.windows.win_reboot:
+    reboot_timeout: 1200
+  when: windows_hostname.reboot_required | default(false)
+
+- name: Apply Windows handlers
+  ansible.builtin.meta: flush_handlers

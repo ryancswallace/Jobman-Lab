@@ -1,0 +1,21 @@
+---
+lab_credentials_file: "{{ lab_root }}/.lab/credentials/lab.env"
+lab_postgres_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_POSTGRES_PASSWORD', type='properties', file=lab_credentials_file) }}"
+lab_mariadb_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_MARIADB_PASSWORD', type='properties', file=lab_credentials_file) }}"
+lab_keycloak_admin_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_KEYCLOAK_ADMIN_PASSWORD', type='properties', file=lab_credentials_file) }}"
+lab_alice_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_ALICE_PASSWORD', type='properties', file=lab_credentials_file) }}"
+lab_bob_password: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_BOB_PASSWORD', type='properties', file=lab_credentials_file) }}"
+lab_agent_token_key: "{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_AGENT_TOKEN_KEY', type='properties', file=lab_credentials_file) }}"
+lab_user_passwords:
+  alice: "{{ lab_alice_password }}"
+  bob: "{{ lab_bob_password }}"
+lab_key_only_password_hash: '$6$jobmanlab$0gM9cHgh6LsorhZWaM0gftserukTjLRRQ6kGgLHFsmCmUzytNe7RHlsShxZUrJDf0ndqrxLI8fu79bILEht5S0'
+lab_postgres_image: docker.io/library/postgres@sha256:ac74e8c63c516b1f81fbaaede0663981399f80e42369431136b2455557f8547b
+lab_keycloak_image: quay.io/keycloak/keycloak@sha256:16d2321732b7daa01cae0f98d34e069869703c298b6751b0c83472603effc80f
+lab_slurm_version: 25.05.8
+lab_slurm_sha256: 21ddc614396e7e0b1ba792841f182b4c5b24949b116cb509a3a650fc6fcc22b6
+lab_control_endpoint: https://control01.lab.test:8080
+lab_oidc_issuer: https://oidc.lab.test:8443/realms/jobman-lab
+lab_oidc_audience: jobman-control
+lab_artifact_store: lab-nfs
+lab_artifact_store_version: 1

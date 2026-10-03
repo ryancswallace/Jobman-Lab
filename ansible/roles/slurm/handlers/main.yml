@@ -1,0 +1,33 @@
+---
+- name: Refresh dynamic linker cache
+  ansible.builtin.command: ldconfig
+  changed_when: true
+
+- name: Restart Munge
+  ansible.builtin.systemd_service:
+    name: munge
+    state: restarted
+  failed_when: false
+- name: Restart SlurmDBD
+  ansible.builtin.systemd_service:
+    name: slurmdbd
+    daemon_reload: true
+    state: restarted
+  when: inventory_hostname == 'slurmctl01'
+  failed_when: false
+
+- name: Restart Slurm controller
+  ansible.builtin.systemd_service:
+    name: slurmctld
+    daemon_reload: true
+    state: restarted
+  when: inventory_hostname == 'slurmctl01'
+  failed_when: false
+
+- name: Restart Slurm compute daemon
+  ansible.builtin.systemd_service:
+    name: slurmd
+    daemon_reload: true
+    state: restarted
+  when: inventory_hostname in ['compute01', 'compute02']
+  failed_when: false

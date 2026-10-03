@@ -1,0 +1,5 @@
+/srv/lab/data {{ lab_network_cidr }}(rw,sync,root_squash,no_subtree_check)
+/srv/lab/shared {{ lab_network_cidr }}(rw,sync,root_squash,no_subtree_check)
+{% for user in lab_users %}
+/srv/lab/home/{{ user.name }} {{ lab_network_cidr }}(rw,sync,root_squash,no_subtree_check)
+{% endfor %}

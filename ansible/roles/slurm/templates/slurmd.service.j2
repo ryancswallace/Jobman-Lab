@@ -1,0 +1,17 @@
+[Unit]
+Description=Slurm compute daemon
+Wants=network-online.target munge.service
+After=network-online.target munge.service
+
+[Service]
+Type=simple
+ExecStart=/opt/slurm/current/sbin/slurmd -D
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+Delegate=yes
+KillMode=process
+LimitNOFILE=131072
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

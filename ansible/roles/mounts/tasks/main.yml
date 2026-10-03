@@ -1,0 +1,35 @@
+---
+- name: Bind storage roots on the storage host
+  ansible.posix.mount:
+    path: "{{ item.path }}"
+    src: "{{ item.src }}"
+    fstype: none
+    opts: bind
+    state: mounted
+  loop:
+    - {path: /data, src: /srv/lab/data}
+    - {path: /shared, src: /srv/lab/shared}
+    - {path: /home/alice, src: /srv/lab/home/alice}
+    - {path: /home/bob, src: /srv/lab/home/bob}
+  when: inventory_hostname == 'storage01'
+
+- name: Mount shared data and miscellaneous NFS exports
+  ansible.posix.mount:
+    path: "{{ item.path }}"
+    src: "10.77.0.10:{{ item.src }}"
+    fstype: nfs4
+    opts: rw,_netdev,hard,timeo=600,retrans=2
+    state: mounted
+  loop:
+    - {path: /data, src: /srv/lab/data}
+    - {path: /shared, src: /srv/lab/shared}
+  when: inventory_hostname != 'storage01'
+- name: Mount each user's individual NFS home export
+  ansible.posix.mount:
+    path: "/home/{{ item.name }}"
+    src: "10.77.0.10:/srv/lab/home/{{ item.name }}"
+    fstype: nfs4
+    opts: rw,_netdev,hard,timeo=600,retrans=2
+    state: mounted
+  loop: "{{ lab_users }}"
+  when: inventory_hostname != 'storage01'

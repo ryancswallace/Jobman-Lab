@@ -1,0 +1,14 @@
+---
+- name: Refresh CA trust
+  ansible.builtin.command: update-ca-trust
+  changed_when: true
+
+- name: Restart OpenSSH
+  ansible.builtin.systemd_service:
+    name: sshd
+    state: restarted
+
+- name: Restart Chrony
+  ansible.builtin.systemd_service:
+    name: chronyd
+    state: restarted

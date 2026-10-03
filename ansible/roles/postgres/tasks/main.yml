@@ -1,0 +1,89 @@
+---
+- name: Install Podman
+  ansible.builtin.dnf:
+    name: podman
+    state: present
+
+- name: Write the private PostgreSQL environment
+  ansible.builtin.copy:
+    dest: /etc/jobman-lab/postgres.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      POSTGRES_USER=jobman_control
+      POSTGRES_PASSWORD={{ lab_postgres_password }}
+      POSTGRES_DB=jobman_control
+  no_log: true
+
+- name: Pull the pinned PostgreSQL ARM64 image
+  ansible.builtin.command: "podman pull {{ lab_postgres_image }}"
+  register: postgres_pull
+  changed_when: "'Copying blob' in postgres_pull.stdout or 'Writing manifest' in postgres_pull.stdout"
+
+- name: Inspect the PostgreSQL data volume
+  ansible.builtin.command: podman volume inspect jobman-postgres-data
+  register: postgres_volume
+  changed_when: false
+  failed_when: false
+
+- name: Create the PostgreSQL data volume
+  ansible.builtin.command: podman volume create jobman-postgres-data
+  when: postgres_volume.rc != 0
+
+- name: Inspect the PostgreSQL container
+  ansible.builtin.command: podman container inspect jobman-postgres
+  register: postgres_container
+  changed_when: false
+  failed_when: false
+
+- name: Create the PostgreSQL container
+  ansible.builtin.command:
+    argv:
+      - podman
+      - create
+      - --name
+      - jobman-postgres
+      - --env-file
+      - /etc/jobman-lab/postgres.env
+      - --publish
+      - 10.77.0.20:5432:5432
+      - --volume
+      - jobman-postgres-data:/var/lib/postgresql/data
+      - "{{ lab_postgres_image }}"
+  when: postgres_container.rc != 0
+  no_log: true
+
+- name: Install the PostgreSQL container service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/jobman-postgres.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Jobman Lab PostgreSQL 17.6
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Restart=on-failure
+      TimeoutStopSec=70
+      ExecStart=/usr/bin/podman start -a jobman-postgres
+      ExecStop=/usr/bin/podman stop -t 60 jobman-postgres
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Start PostgreSQL
+  ansible.builtin.systemd_service:
+    name: jobman-postgres
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Wait for PostgreSQL to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 10.77.0.20
+    port: 5432
+    timeout: 180
