@@ -1,0 +1,6 @@
+---
+- name: Restart isolated Dashboard broker
+  ansible.builtin.systemd_service:
+    name: jobman-dashboard-lab-broker
+    daemon_reload: true
+    state: restarted

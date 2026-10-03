@@ -1,0 +1,21 @@
+[Unit]
+Description=Isolated synthetic Dashboard LDAPS acceptance fixture
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobman-dashboard-source
+Group=jobman-dashboard-source
+ExecStart=/usr/local/libexec/jobman-dashboard-lab/jobman-control-lab-helper directory --root {{ dashboard_fixture_root }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

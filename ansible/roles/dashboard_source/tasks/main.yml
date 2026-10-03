@@ -1,0 +1,167 @@
+---
+- name: Create the isolated source identity
+  ansible.builtin.group:
+    name: jobman-dashboard-source
+    gid: 21902
+    state: present
+
+- name: Create the isolated non-login source user
+  ansible.builtin.user:
+    name: jobman-dashboard-source
+    uid: 21902
+    group: jobman-dashboard-source
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+
+- name: Permit only service traversal through the private parent
+  ansible.posix.acl:
+    path: /etc/jobman-dashboard-lab
+    entity: "21902"
+    etype: user
+    permissions: x
+    state: present
+
+- name: Create the private source material root
+  ansible.builtin.file:
+    path: "{{ dashboard_fixture_root }}"
+    state: directory
+    owner: jobman-dashboard-source
+    group: jobman-dashboard-source
+    mode: "0700"
+
+- name: Create the private synthetic spool parent
+  ansible.builtin.file:
+    path: /var/lib/jobman-dashboard-lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the exact verified source binaries and build evidence
+  ansible.builtin.copy:
+    src: "{{ dashboard_control_build }}/{{ item }}"
+    dest: "/usr/local/libexec/jobman-dashboard-lab/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ '0644' if item == 'build.json' else '0755' }}"
+  loop: [jobman-control, jobman-control-lab-helper, build.json]
+  notify: Restart isolated source services
+
+- name: Write explicit public OIDC subject-to-directory mappings
+  ansible.builtin.copy:
+    content: "{{ {'issuer': dashboard_oidc.issuer, 'audience': dashboard_oidc.audience, 'host': '10.77.0.21', 'users': [{'directoryId': dashboard_oidc.users[0].directoryGuid, 'subject': dashboard_oidc.users[0].subject, 'name': 'Synthetic Alice'}, {'directoryId': dashboard_oidc.users[1].directoryGuid, 'subject': dashboard_oidc.users[1].subject, 'name': 'Synthetic Bob'}]} | to_nice_json }}\n"
+    dest: /etc/jobman-dashboard-lab/fixture-input.json
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Prepare only the isolated Control database and synthetic identities
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/jobman-dashboard-lab/jobman-control-lab-helper
+      - prepare
+      - --root
+      - "{{ dashboard_fixture_root }}"
+      - --config
+      - /etc/jobman-dashboard-lab/fixture-input.json
+      - --database-url-file
+      - /etc/jobman-dashboard-lab/control-database-url
+      - --log-root
+      - /var/lib/jobman-dashboard-lab/seed-logs
+  changed_when: false
+  no_log: true
+
+- name: Assign only the generated private fixture material to its service identity
+  ansible.builtin.file:
+    path: "{{ dashboard_fixture_root }}"
+    owner: jobman-dashboard-source
+    group: jobman-dashboard-source
+    recurse: true
+  no_log: true
+
+- name: Grant Alice traversal only through the synthetic spool parent
+  ansible.posix.acl:
+    path: /var/lib/jobman-dashboard-lab
+    entity: "21001"
+    etype: user
+    permissions: x
+    state: present
+
+- name: Grant Alice read and traversal only on the synthetic seed spool
+  ansible.posix.acl:
+    path: /var/lib/jobman-dashboard-lab/seed-logs
+    entity: "21001"
+    etype: user
+    permissions: rX
+    recursive: true
+    follow: false
+    state: present
+
+- name: Install immutable synthetic spool copier
+  ansible.builtin.copy:
+    src: copy-log-spool.py
+    dest: /usr/local/libexec/jobman-dashboard-lab/copy-log-spool.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Publish only synthetic namespace objects as Alice across root-squashed NFS
+  ansible.builtin.command: sudo -u alice python3 /usr/local/libexec/jobman-dashboard-lab/copy-log-spool.py
+  changed_when: false
+
+- name: Install isolated directory and Control systemd units
+  ansible.builtin.template:
+    src: "{{ item.template }}"
+    dest: "/etc/systemd/system/{{ item.unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {template: directory.service.j2, unit: jobman-dashboard-lab-directory.service}
+    - {template: source.service.j2, unit: jobman-dashboard-lab-control.service}
+  notify: Restart isolated source services
+
+- name: Start the isolated LDAPS fixture without altering the existing directory or issuer
+  ansible.builtin.systemd_service:
+    name: jobman-dashboard-lab-directory
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Start the isolated Control source without altering the existing Control service
+  ansible.builtin.systemd_service:
+    name: jobman-dashboard-lab-control
+    enabled: true
+    state: started
+
+- name: Fetch only public fixture identities
+  ansible.builtin.fetch:
+    src: "{{ dashboard_fixture_root }}/fixture-info.json"
+    dest: "{{ lab_root }}/.lab/dashboard/fixture-info.json"
+    flat: true
+
+- name: Create the private host staging directory for Dashboard Control material
+  ansible.builtin.file:
+    path: "{{ lab_root }}/.lab/dashboard/runtime/control"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Fetch only Dashboard client material and public source trust
+  ansible.builtin.fetch:
+    src: "{{ dashboard_fixture_root }}/{{ item }}"
+    dest: "{{ lab_root }}/.lab/dashboard/runtime/control/{{ item }}"
+    flat: true
+  loop: [fixture-ca.crt, dashboard-client.crt, dashboard-client.key, dashboard-signing-key.pem]
+  no_log: true
+
+- name: Restrict the staged host client material
+  ansible.builtin.file:
+    path: "{{ lab_root }}/.lab/dashboard/runtime/control/{{ item }}"
+    mode: "0600"
+  loop: [fixture-ca.crt, dashboard-client.crt, dashboard-client.key, dashboard-signing-key.pem]
+  delegate_to: localhost
+  become: false
+  no_log: true

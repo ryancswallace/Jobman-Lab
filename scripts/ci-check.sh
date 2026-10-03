@@ -21,6 +21,7 @@ ruby -c scripts/generate-inventory.rb >/dev/null
 ruby -c scripts/dashboard-inventory.rb >/dev/null
 python3 -c "import ast, pathlib; [ast.parse(p.read_text()) for root in ['scripts', 'ansible/roles'] for p in pathlib.Path(root).rglob('*.py')]"
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-provisioning.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-build.py
 ruby -r rexml/document -e 'REXML::Document.new(File.read(ARGV.fetch(0)))' \
   packer/http/Autounattend.xml
 
@@ -34,6 +35,8 @@ export ANSIBLE_LOCAL_TEMP="$lab_root/.lab/ansible/tmp"
 for playbook in \
   ansible/site.yml \
   ansible/dashboard-infra.yml \
+  ansible/dashboard-source.yml \
+  ansible/dashboard-runtime.yml \
   ansible/tokens.yml \
   ansible/enroll.yml \
   ansible/validate.yml

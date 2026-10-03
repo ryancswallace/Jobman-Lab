@@ -1,0 +1,70 @@
+---
+- name: Create isolated private broker configuration and local state
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: jobman-dashboard-log
+    group: jobman-dashboard-log
+    mode: "0700"
+  loop: [/etc/jobman-dashboard-broker-lab, /var/lib/jobman-dashboard-broker-lab]
+
+- name: Install exact verified broker binary
+  ansible.builtin.copy:
+    src: "{{ dashboard_application_build }}/jobman-log-broker"
+    dest: /usr/local/libexec/jobman-dashboard-lab/jobman-log-broker
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart isolated Dashboard broker
+
+- name: Install independent inbound broker trust and configuration
+  ansible.builtin.copy:
+    src: "{{ dashboard_runtime_root }}/{{ item.source }}"
+    dest: "/etc/jobman-dashboard-broker-lab/{{ item.dest }}"
+    owner: jobman-dashboard-log
+    group: jobman-dashboard-log
+    mode: "0600"
+  loop:
+    - {source: broker-server.crt, dest: server.crt}
+    - {source: broker-server.key, dest: server.key}
+    - {source: dashboard-broker-client.crt, dest: dashboard-client.crt}
+    - {source: dashboard-broker-signing-public.pem, dest: dashboard-signing-public.pem}
+    - {source: broker.json, dest: config.json}
+  no_log: true
+  notify: Restart isolated Dashboard broker
+
+- name: Install only the broker's independent outbound Control credentials
+  ansible.builtin.copy:
+    src: "/etc/jobman-dashboard-lab/control-fixture/{{ item.source }}"
+    dest: "/etc/jobman-dashboard-broker-lab/{{ item.dest }}"
+    remote_src: true
+    owner: jobman-dashboard-log
+    group: jobman-dashboard-log
+    mode: "0600"
+  loop:
+    - {source: fixture-ca.crt, dest: control-ca.crt}
+    - {source: broker-client.crt, dest: control-client.crt}
+    - {source: broker-client.key, dest: control-client.key}
+    - {source: broker-signing-key.pem, dest: control-signing-key.pem}
+  no_log: true
+  notify: Restart isolated Dashboard broker
+
+- name: Validate broker structure and private trust as its actual service user
+  ansible.builtin.command: sudo -u jobman-dashboard-log /usr/local/libexec/jobman-dashboard-lab/jobman-log-broker --config /etc/jobman-dashboard-broker-lab/config.json --mode check-config
+  changed_when: false
+
+- name: Install the isolated broker systemd service
+  ansible.builtin.template:
+    src: broker.service.j2
+    dest: /etc/systemd/system/jobman-dashboard-lab-broker.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart isolated Dashboard broker
+
+- name: Start only the isolated broker
+  ansible.builtin.systemd_service:
+    name: jobman-dashboard-lab-broker
+    daemon_reload: true
+    enabled: true
+    state: started

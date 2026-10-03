@@ -6,7 +6,7 @@ VAGRANT_ENV := JOBMAN_LAB_GROUP=$(LAB_GROUP) VAGRANT_DEFAULT_PROVIDER=parallels
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY := YES
 
 .PHONY: help bootstrap check-host verify-sources tools collections packer-init fetch-artifacts images image-linux image-windows \
-	build-products ensure-running inventory up up-core up-full converge configure-control configure-dashboard-infra check-dashboard-infra enroll test status halt down destroy clean-generated
+	build-products ensure-running inventory up up-core up-full converge configure-control configure-dashboard-infra check-dashboard-infra configure-dashboard-source configure-dashboard-runtime enroll test status halt down destroy clean-generated
 
 help: ## Show supported lab operations.
 	@awk 'BEGIN {FS = ":.*## "; printf "Jobman local lab\n\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -90,3 +90,9 @@ configure-dashboard-infra: ## Add Dashboard DB TLS/roles and log-reader ACLs on 
 
 check-dashboard-infra: ## Verify Dashboard TLS/roles and cross-user NFS reader ACLs with disposable probes.
 	./scripts/check-dashboard-infra.py
+
+configure-dashboard-source: ## Prepare an isolated source using CONTROL_FIXTURE_BUILD (exact Linux ARM64 build directory).
+	./scripts/configure-dashboard-source.sh "$(CONTROL_FIXTURE_BUILD)"
+
+configure-dashboard-runtime: ## Install app/broker using DASHBOARD_BUILD (exact Linux ARM64 executables and web directory).
+	./scripts/configure-dashboard-runtime.sh "$(DASHBOARD_BUILD)"

@@ -1,0 +1,139 @@
+---
+- name: Create the isolated Dashboard runtime group
+  ansible.builtin.group:
+    name: jobman-dashboard-app
+    gid: 21903
+    state: present
+
+- name: Create the isolated non-login Dashboard runtime user
+  ansible.builtin.user:
+    name: jobman-dashboard-app
+    uid: 21903
+    group: jobman-dashboard-app
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+
+- name: Create private application configuration root
+  ansible.builtin.file:
+    path: /etc/jobman-dashboard-app-lab
+    state: directory
+    owner: jobman-dashboard-app
+    group: jobman-dashboard-app
+    mode: "0700"
+
+- name: Create binary and static application directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [/usr/local/libexec/jobman-dashboard-lab, /usr/local/share/jobman-dashboard-lab/web]
+
+- name: Install exact verified Dashboard binary and build evidence
+  ansible.builtin.copy:
+    src: "{{ dashboard_application_build }}/{{ item.source }}"
+    dest: "/usr/local/libexec/jobman-dashboard-lab/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {source: jobman-dashboard, dest: jobman-dashboard, mode: "0755"}
+    - {source: build.json, dest: dashboard-build.json, mode: "0644"}
+  notify: Restart isolated Dashboard application
+
+- name: Install compiled web assets
+  ansible.builtin.copy:
+    src: "{{ dashboard_application_build }}/web/"
+    dest: /usr/local/share/jobman-dashboard-lab/web/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  notify: Restart isolated Dashboard application
+
+- name: Install private application TLS identity and persistence credentials
+  ansible.builtin.copy:
+    src: "{{ dashboard_runtime_root }}/{{ item.source }}"
+    dest: "/etc/jobman-dashboard-app-lab/{{ item.dest }}"
+    owner: jobman-dashboard-app
+    group: jobman-dashboard-app
+    mode: "0600"
+  loop:
+    - {source: dashboard.json, dest: config.json}
+    - {source: dashboard-server.crt, dest: server.crt}
+    - {source: dashboard-server.key, dest: server.key}
+    - {source: database-url, dest: database-url}
+    - {source: web-client-secret, dest: web-client-secret}
+    - {source: encryption-key, dest: encryption-key}
+    - {source: dashboard-broker-client.crt, dest: broker-client.crt}
+    - {source: dashboard-broker-client.key, dest: broker-client.key}
+    - {source: dashboard-broker-signing-key.pem, dest: broker-signing-key.pem}
+    - {source: control/fixture-ca.crt, dest: control-ca.crt}
+    - {source: control/dashboard-client.crt, dest: control-client.crt}
+    - {source: control/dashboard-client.key, dest: control-client.key}
+    - {source: control/dashboard-signing-key.pem, dest: control-signing-key.pem}
+  no_log: true
+  notify: Restart isolated Dashboard application
+
+- name: Resolve the approved public Dashboard hostname only inside this guest
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "10.77.0.10 dashboard.lab.test # isolated Dashboard Lab"
+    regexp: '^10\.77\.0\.10 dashboard\.lab\.test # isolated Dashboard Lab$'
+    state: present
+
+- name: Validate application configuration as its actual service identity
+  ansible.builtin.command: sudo -u jobman-dashboard-app /usr/local/libexec/jobman-dashboard-lab/jobman-dashboard --config /etc/jobman-dashboard-app-lab/config.json --mode check-config
+  changed_when: false
+
+- name: Apply forward migrations with a transient separate DDL credential
+  block:
+    - name: Install root-only migration URL for this operation
+      ansible.builtin.copy:
+        src: "{{ dashboard_runtime_root }}/migration-database-url"
+        dest: /etc/jobman-dashboard-app-lab/migration-database-url
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Apply Dashboard migrations using only its dedicated DDL role
+      ansible.builtin.command: /usr/local/libexec/jobman-dashboard-lab/jobman-dashboard --config /etc/jobman-dashboard-app-lab/config.json --mode migrate --migration-database-url-file /etc/jobman-dashboard-app-lab/migration-database-url
+      changed_when: false
+      no_log: true
+  always:
+    - name: Remove only the transient guest migration credential
+      ansible.builtin.file:
+        path: /etc/jobman-dashboard-app-lab/migration-database-url
+        state: absent
+      no_log: true
+
+- name: Apply current-table runtime grants only inside the migrated Dashboard database
+  ansible.builtin.command:
+    argv: [podman, exec, -i, jobman-postgres, psql, -X, -v, ON_ERROR_STOP=1, -U, jobman_control, -d, jobman_dashboard]
+    stdin: |
+      DO $$ BEGIN IF current_database() <> 'jobman_dashboard' THEN RAISE EXCEPTION 'Wrong Dashboard database'; END IF; END $$;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO jobman_dashboard;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO jobman_dashboard;
+      REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.dashboard_schema_migrations FROM jobman_dashboard;
+      GRANT SELECT ON public.dashboard_schema_migrations TO jobman_dashboard;
+  delegate_to: pg01
+  changed_when: false
+
+- name: Install the isolated Dashboard systemd service
+  ansible.builtin.template:
+    src: dashboard.service.j2
+    dest: /etc/systemd/system/jobman-dashboard-lab-app.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart isolated Dashboard application
+
+- name: Start only the isolated Dashboard application
+  ansible.builtin.systemd_service:
+    name: jobman-dashboard-lab-app
+    daemon_reload: true
+    enabled: true
+    state: started

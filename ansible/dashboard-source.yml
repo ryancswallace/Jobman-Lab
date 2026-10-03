@@ -1,0 +1,10 @@
+---
+- name: Install one isolated synthetic Control source without replacing existing services
+  hosts: control01
+  become: true
+  gather_facts: false
+  vars:
+    dashboard_fixture_root: /etc/jobman-dashboard-lab/control-fixture
+    dashboard_oidc: "{{ lookup('ansible.builtin.file', lab_root + '/.lab/dashboard/oidc-public.json') | from_json }}"
+  roles:
+    - dashboard_source

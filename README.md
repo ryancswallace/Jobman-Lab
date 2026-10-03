@@ -348,3 +348,83 @@ PYTHONDONTWRITEBYTECODE=1 ./scripts/check-dashboard-producer.py /absolute/path/a
 The test runs as Alice, creates a unique disposable NFS subtree, verifies actual
 content reads without printing bytes, cleans only its own files, and records
 the tested binary SHA-256 in `.lab/dashboard/producer-check.json`.
+
+## Isolated Dashboard runtime fixture
+
+The optional runtime uses only the three already-running infrastructure VMs.
+Prepare it after `configure-dashboard-infra` using an explicitly supplied exact
+Linux ARM64 Control fixture build, then an exact Dashboard/broker/web build:
+
+```sh
+./scripts/configure-dashboard-source.sh /absolute/path/to/control-fixture-build
+./scripts/configure-dashboard-runtime.sh /absolute/path/to/dashboard-build
+./scripts/check-dashboard-runtime.py
+```
+
+Each build directory has `build.json` with its full source revision, platform,
+toolchain and SHA-256 hashes for its executables. The scripts verify those hashes
+before upload. The Dashboard directory also contains the compiled `web.tar.gz` and its digest.
+The wrapper verifies that digest and stages its exact `web/` tree, rejecting
+path traversal, links, special files, duplicate paths and excessive sizes. An
+existing staged tree must match the archive byte-for-byte; it is not overwritten.
+Control's directory contains the ordinary `jobman-control` binary and the
+nonrelease `jobman-control-lab-helper`; both must come from the same exact
+revision. The normal Control API and real directory reconciliation workers run
+unchanged against the isolated `jobman_dashboard_control` database. The helper
+creates a synthetic LDAPS service and admits synthetic data through real Store
+methods; it does not execute Slurm/host jobs or prove corporate AD behavior.
+
+| Process | Guest / endpoint | User |
+| --- | --- | --- |
+| Dashboard HTTPS | storage01, `https://dashboard.lab.test:8443` | `jobman-dashboard-app`, UID21903 |
+| Storage broker | control01, `https://10.77.0.21:19443` | `jobman-dashboard-log`, UID21901 |
+| Synthetic Control | control01, `https://10.77.0.21:18443` | `jobman-dashboard-source`, UID21902 |
+| Synthetic directory | control01, `ldaps://127.0.0.1:18636` | `jobman-dashboard-source`, UID21902 |
+
+Original Control8080 and Keycloak8443 on control01 are preserved. Only the
+Dashboard guest receives the scoped `/etc/hosts` entry for its own hostname;
+the Mac's DNS and trust stores are unchanged. Host checks should use an explicit
+CA and a hostname-preserving `--resolve dashboard.lab.test:8443:10.77.0.10`.
+Existing Lab guest trust already covers the Lab CA. Generated application and
+broker leaf certificates last seven days and are not silently renewed; inspect
+and replace the explicit synthetic credentials before expiry.
+
+The private Control fixture root is `/etc/jobman-dashboard-lab/control-fixture`,
+owned by its service user with mode0700. Preparation is immutable once complete;
+repeating identical inputs is a no-op. A partial preparation needs inspection,
+not a database reset or deletion of credentials. Public actual source,
+namespace, target-generation and job/group IDs are fetched to
+`.lab/dashboard/fixture-info.json`. Only the Dashboard's required Control client
+key/certificate/signing key and public fixture CA are copied into private host
+staging. The Control fixture CA **private** key never leaves its fixture root.
+
+Synthetic log bytes first go to `/var/lib/jobman-dashboard-lab/seed-logs` on
+control01. Alice receives only read/traverse access to that spool; a scoped
+copier exclusively creates its two synthetic namespace trees in
+`/data/jobman/alice` with modes0750/0640. It never uses root to write the
+root-squashed NFS mount, never preserves a local source ACL over the NFS default,
+and rejects changes to existing immutable output. No existing workload target
+or job is launched or modified.
+
+Application material is private under `/etc/jobman-dashboard-app-lab` on
+storage01. Broker material is independently private under
+`/etc/jobman-dashboard-broker-lab` on control01. Dashboard-to-broker mTLS and
+Ed25519 credentials are distinct from either process's Control credentials.
+All TLS roots are explicit. The broker's rollback/identity ledger remains on
+local disk at `/var/lib/jobman-dashboard-broker-lab` with mode0700; do not remove
+it to bypass source restore or rollback checks. Its only log mapping pins the
+fixture's actual target generations, `lab-nfs` version1, and Alice's NFS root.
+
+The runtime playbook applies Dashboard migrations using a temporary root-only
+DDL credential, grants runtime DML on current tables (migration ledger remains
+read-only), and removes the guest DDL credential before starting the app.
+Service users are non-login, have no privileges/capabilities, and use systemd
+read-only system protection; only broker local state is writable. A runtime
+reapply restarts only the corresponding isolated services when their material
+or binary changes. It never changes the original services.
+
+To stop this fixture, stop only `jobman-dashboard-lab-app` on storage01 and
+`jobman-dashboard-lab-broker`, `jobman-dashboard-lab-control`, and
+`jobman-dashboard-lab-directory` on control01. Preserve private material, broker
+ledger and both dedicated databases for inspection/recovery. Starting the
+fixture does not constitute production, APNs, AD FS or managed-iPhone acceptance.
