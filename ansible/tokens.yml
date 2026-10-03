@@ -1,0 +1,51 @@
+---
+- name: Install OIDC tokens in shared Linux homes
+  hosts: storage
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install each Linux user's short-lived OIDC token
+      ansible.builtin.copy:
+        src: "{{ lab_root }}/.lab/credentials/{{ item.name }}.token"
+        dest: "/home/{{ item.name }}/.config/jobman/control-token"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0600"
+      loop: "{{ lab_users }}"
+      no_log: true
+
+- name: Install OIDC tokens on the Windows workstation
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Resolve registered Windows user profiles
+      ansible.windows.win_user_profile:
+        username: "{{ item.name }}"
+        name: "{{ item.name }}"
+        state: present
+      loop: "{{ lab_users }}"
+      register: windows_token_profiles
+
+    - name: Record registered Windows user profile paths
+      ansible.builtin.set_fact:
+        windows_token_profile_paths: >-
+          {{ windows_token_profile_paths | default({}) |
+             combine({item.item.name: item.path}) }}
+      loop: "{{ windows_token_profiles.results }}"
+
+    - name: Install each Windows user's short-lived OIDC token
+      ansible.windows.win_copy:
+        src: "{{ lab_root }}/.lab/credentials/{{ item.name }}.token"
+        dest: "{{ windows_token_profile_paths[item.name] }}\\AppData\\Roaming\\Jobman\\control-token"
+      loop: "{{ lab_users }}"
+      no_log: true
+
+    - name: Restrict Windows token ACLs
+      ansible.windows.win_powershell:
+        script: |
+          $path = '{{ windows_token_profile_paths[item.name] }}\AppData\Roaming\Jobman\control-token'
+          & icacls.exe $path /inheritance:r | Out-Null
+          & icacls.exe $path /grant:r '{{ item.name }}:F' 'SYSTEM:F' 'Administrators:F' | Out-Null
+          $Ansible.Changed = $true
+      loop: "{{ lab_users }}"
+      no_log: true

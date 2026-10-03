@@ -1,0 +1,145 @@
+---
+- name: Validate Linux mounts, SSH, and Slurm submission
+  hosts: linux
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require synchronized Linux clocks
+      ansible.builtin.command:
+        argv:
+          - chronyc
+          - waitsync
+          - "10"
+          - "1.0"
+          - "0.0"
+          - "1"
+      changed_when: false
+
+    - name: Require all three Linux storage mappings
+      ansible.builtin.command: "findmnt --mountpoint {{ item }}"
+      loop:
+        - /data
+        - /shared
+        - /home/alice
+        - /home/bob
+      changed_when: false
+
+    - name: Verify Linux SSH from Alice to every lab host
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - "{{ item.key }}.{{ lab_domain }}"
+          - echo
+          - jobman-lab
+      become_user: alice
+      environment:
+        HOME: /home/alice
+      loop: "{{ lab_nodes | dict2items }}"
+      register: alice_ssh_matrix
+      changed_when: false
+
+    - name: Verify Linux SSH from Bob to every lab host
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - "{{ item.key }}.{{ lab_domain }}"
+          - echo
+          - jobman-lab
+      become_user: bob
+      environment:
+        HOME: /home/bob
+      loop: "{{ lab_nodes | dict2items }}"
+      register: bob_ssh_matrix
+      changed_when: false
+
+    - name: Submit a Slurm smoke job from every Linux host
+      ansible.builtin.command:
+        argv:
+          - sbatch
+          - --parsable
+          - --wait
+          - "--output=/data/jobman/alice/slurm-smoke-%j.out"
+          - --wrap=/usr/bin/hostname
+      become_user: alice
+      environment:
+        HOME: /home/alice
+      register: linux_slurm_smoke
+      changed_when: true
+
+- name: Validate Windows shares, SSH, and Slurm wrapper
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Require the isolated Windows time source
+      ansible.windows.win_command: w32tm.exe /query /source
+      register: windows_time_source
+      changed_when: false
+      failed_when: >-
+        windows_time_source.rc != 0 or
+        ('storage01' not in windows_time_source.stdout and
+         lab_nodes.storage01.address not in windows_time_source.stdout)
+
+    - name: Verify Windows SSH from each synthetic user to every lab host
+      ansible.windows.win_command:
+        argv:
+          - C:\Windows\System32\OpenSSH\ssh.exe
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - "{{ item.1.key }}.{{ lab_domain }}"
+          - echo
+          - jobman-lab
+      become: true
+      become_method: runas
+      become_user: "{{ item.0.name }}"
+      vars:
+        ansible_become_password: "{{ lab_user_passwords[item.0.name] }}"
+      loop: "{{ lab_users | product(lab_nodes | dict2items) | list }}"
+      changed_when: false
+      no_log: true
+
+    - name: Verify Slurm visibility through the Windows SSH wrapper
+      ansible.windows.win_command: 'cmd.exe /d /s /c ""C:\Program Files\Jobman Lab\bin\sinfo.cmd" --noheader"'
+      become: true
+      become_method: runas
+      become_user: alice
+      vars:
+        ansible_become_password: "{{ lab_alice_password }}"
+      changed_when: false
+      no_log: true
+
+- name: Validate durable Slurm accounting
+  hosts: slurm_controller
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require healthy compute nodes
+      ansible.builtin.command: sinfo --noheader --format=%N:%T
+      register: sinfo_result
+      changed_when: false
+      failed_when: "'idle' not in sinfo_result.stdout and 'mix' not in sinfo_result.stdout and 'alloc' not in sinfo_result.stdout"
+
+    - name: Require accounting records for Alice
+      ansible.builtin.command: sacct --noheader --starttime today --user alice --format=JobID,State
+      register: sacct_result
+      changed_when: false
+      failed_when: sacct_result.stdout | trim | length == 0
+
+- name: Validate Control health from inside the lab
+  hosts: control
+  gather_facts: false
+  tasks:
+    - name: Require Jobman Control readiness
+      ansible.builtin.uri:
+        url: "{{ lab_control_endpoint }}/readyz"
+        ca_path: /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+        status_code: 200

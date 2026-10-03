@@ -1,0 +1,430 @@
+---
+- name: Enroll per-user Slurm agents
+  hosts: submit
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create the local agent state root
+      ansible.builtin.file:
+        path: /var/lib/jobman-agent
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create local Slurm agent state directories
+      ansible.builtin.file:
+        path: "/var/lib/jobman-agent/{{ item.name }}/onprem-slurm"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0700"
+      loop: "{{ lab_users }}"
+
+    - name: Classify Slurm agent credential lifetime without exposing credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        state="/var/lib/jobman-agent/{{ item.name }}/onprem-slurm"
+        if [[ ! -f "$state/credentials.json" ]]; then
+          printf 'missing\n'
+          exit 0
+        fi
+        status="$(/usr/local/bin/jobman-agent status --json --state-dir "$state")"
+        certificate_expiry="$(jq -er '.status.certificateExpiresAt' <<<"$status")"
+        session_expiry="$(jq -er '.status.sessionExpiresAt' <<<"$status")"
+        renewal_deadline="$(( $(date --utc +%s) + 60 ))"
+        if [[ "$(date --date="$certificate_expiry" +%s)" -le "$renewal_deadline" ||
+              "$(date --date="$session_expiry" +%s)" -le "$renewal_deadline" ]]; then
+          printf 'expired\n'
+        else
+          printf 'healthy\n'
+        fi
+      args:
+        executable: /bin/bash
+      become_user: "{{ item.name }}"
+      environment:
+        HOME: "/home/{{ item.name }}"
+      loop: "{{ lab_users }}"
+      register: slurm_agent_health
+      changed_when: false
+
+    - name: Stop Slurm agents with expired credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        unit="jobman-agent-slurm-{{ item.item.name }}.service"
+        if systemctl is-active --quiet "$unit"; then
+          systemctl stop "$unit"
+          printf 'stopped\n'
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ slurm_agent_health.results }}"
+      when: item.stdout | trim == 'expired'
+      register: stale_slurm_agent_stops
+      changed_when: stale_slurm_agent_stops.stdout | default('') | trim == 'stopped'
+
+    - name: Archive expired Slurm agent state
+      ansible.builtin.shell: |
+        set -euo pipefail
+        state="/var/lib/jobman-agent/{{ item.item.name }}/onprem-slurm"
+        archive="${state}.expired-$(date --utc +%Y%m%dT%H%M%S)-${RANDOM}"
+        mv -- "$state" "$archive"
+      args:
+        executable: /bin/bash
+      loop: "{{ slurm_agent_health.results }}"
+      when: item.stdout | trim == 'expired'
+      changed_when: true
+
+    - name: Recreate archived Slurm agent state directories
+      ansible.builtin.file:
+        path: "/var/lib/jobman-agent/{{ item.name }}/onprem-slurm"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0700"
+      loop: "{{ lab_users }}"
+
+    - name: Inspect Slurm agent enrollment state
+      ansible.builtin.stat:
+        path: "/var/lib/jobman-agent/{{ item.name }}/onprem-slurm/credentials.json"
+      loop: "{{ lab_users }}"
+      register: slurm_agent_states
+
+    - name: Enroll Slurm agents with one-time tokens
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/jobman-agent
+          - enroll
+          - --slurm
+          - --state-dir
+          - "/var/lib/jobman-agent/{{ item.item.name }}/onprem-slurm"
+          - --server
+          - "{{ lab_control_endpoint }}"
+          - --target-generation
+          - "{{ (lookup('file', lab_root + '/.lab/control/target-generations.json') | from_json)['onprem-slurm'] }}"
+          - --server-ca
+          - /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+        stdin: "{{ (lookup('file', lab_root + '/.lab/credentials/enrollment/onprem-slurm-' + item.item.name + '.json') | from_json).spec.token }}\n"
+      become_user: "{{ item.item.name }}"
+      environment:
+        HOME: "/home/{{ item.item.name }}"
+      loop: "{{ slurm_agent_states.results }}"
+      when: not item.stat.exists
+      no_log: true
+
+    - name: Install per-user Slurm agent services
+      ansible.builtin.template:
+        src: roles/agent/templates/jobman-agent-slurm.service.j2
+        dest: "/etc/systemd/system/jobman-agent-slurm-{{ item.name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ lab_users }}"
+
+    - name: Start per-user Slurm agents
+      ansible.builtin.systemd_service:
+        name: "jobman-agent-slurm-{{ item.name }}"
+        daemon_reload: true
+        enabled: true
+        state: restarted
+      loop: "{{ lab_users }}"
+
+- name: Enroll per-user Linux workstation agents
+  hosts: linux_workstation
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create the local agent state root
+      ansible.builtin.file:
+        path: /var/lib/jobman-agent
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create local workstation agent state directories
+      ansible.builtin.file:
+        path: "/var/lib/jobman-agent/{{ item.name }}/linux-workstation"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0700"
+      loop: "{{ lab_users }}"
+
+    - name: Classify Linux workstation agent credential lifetime without exposing credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        state="/var/lib/jobman-agent/{{ item.name }}/linux-workstation"
+        if [[ ! -f "$state/credentials.json" ]]; then
+          printf 'missing\n'
+          exit 0
+        fi
+        status="$(/usr/local/bin/jobman-agent status --json --state-dir "$state")"
+        certificate_expiry="$(jq -er '.status.certificateExpiresAt' <<<"$status")"
+        session_expiry="$(jq -er '.status.sessionExpiresAt' <<<"$status")"
+        renewal_deadline="$(( $(date --utc +%s) + 60 ))"
+        if [[ "$(date --date="$certificate_expiry" +%s)" -le "$renewal_deadline" ||
+              "$(date --date="$session_expiry" +%s)" -le "$renewal_deadline" ]]; then
+          printf 'expired\n'
+        else
+          printf 'healthy\n'
+        fi
+      args:
+        executable: /bin/bash
+      become_user: "{{ item.name }}"
+      environment:
+        HOME: "/home/{{ item.name }}"
+      loop: "{{ lab_users }}"
+      register: linux_agent_health
+      changed_when: false
+
+    - name: Stop Linux workstation agents with expired credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        unit="jobman-agent-host-{{ item.item.name }}.service"
+        if systemctl is-active --quiet "$unit"; then
+          systemctl stop "$unit"
+          printf 'stopped\n'
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ linux_agent_health.results }}"
+      when: item.stdout | trim == 'expired'
+      register: stale_linux_agent_stops
+      changed_when: stale_linux_agent_stops.stdout | default('') | trim == 'stopped'
+
+    - name: Archive expired Linux workstation agent state
+      ansible.builtin.shell: |
+        set -euo pipefail
+        state="/var/lib/jobman-agent/{{ item.item.name }}/linux-workstation"
+        archive="${state}.expired-$(date --utc +%Y%m%dT%H%M%S)-${RANDOM}"
+        mv -- "$state" "$archive"
+      args:
+        executable: /bin/bash
+      loop: "{{ linux_agent_health.results }}"
+      when: item.stdout | trim == 'expired'
+      changed_when: true
+
+    - name: Recreate archived Linux workstation agent state directories
+      ansible.builtin.file:
+        path: "/var/lib/jobman-agent/{{ item.name }}/linux-workstation"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0700"
+      loop: "{{ lab_users }}"
+
+    - name: Inspect Linux workstation enrollment state
+      ansible.builtin.stat:
+        path: "/var/lib/jobman-agent/{{ item.name }}/linux-workstation/credentials.json"
+      loop: "{{ lab_users }}"
+      register: linux_agent_states
+
+    - name: Enroll Linux workstation agents with one-time tokens
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/jobman-agent
+          - enroll
+          - --state-dir
+          - "/var/lib/jobman-agent/{{ item.item.name }}/linux-workstation"
+          - --server
+          - "{{ lab_control_endpoint }}"
+          - --target-generation
+          - "{{ (lookup('file', lab_root + '/.lab/control/target-generations.json') | from_json)['linux-workstation'] }}"
+          - --server-ca
+          - /etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt
+        stdin: "{{ (lookup('file', lab_root + '/.lab/credentials/enrollment/linux-workstation-' + item.item.name + '.json') | from_json).spec.token }}\n"
+      become_user: "{{ item.item.name }}"
+      environment:
+        HOME: "/home/{{ item.item.name }}"
+      loop: "{{ linux_agent_states.results }}"
+      when: not item.stat.exists
+      no_log: true
+
+    - name: Install per-user Linux workstation agent services
+      ansible.builtin.template:
+        src: roles/agent/templates/jobman-agent-host.service.j2
+        dest: "/etc/systemd/system/jobman-agent-host-{{ item.name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ lab_users }}"
+
+    - name: Start per-user Linux workstation agents
+      ansible.builtin.systemd_service:
+        name: "jobman-agent-host-{{ item.name }}"
+        daemon_reload: true
+        enabled: true
+        state: restarted
+      loop: "{{ lab_users }}"
+
+- name: Enroll per-user Windows workstation agents
+  hosts: windows_workstation
+  gather_facts: false
+  tasks:
+    - name: Create local Windows agent state directories
+      ansible.windows.win_file:
+        path: "C:\\ProgramData\\Jobman Lab\\agents\\{{ item.name }}\\windows-workstation"
+        state: directory
+      loop: "{{ lab_users }}"
+
+    - name: Grant each Windows user exclusive access to its local agent state
+      ansible.windows.win_powershell:
+        script: |
+          $path = 'C:\ProgramData\Jobman Lab\agents\{{ item.name }}'
+          & icacls.exe $path /inheritance:r | Out-Null
+          & icacls.exe $path /grant:r '{{ item.name }}:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+          $Ansible.Changed = $true
+      loop: "{{ lab_users }}"
+
+    - name: Classify Windows workstation agent credential lifetime without exposing credentials
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $state = 'C:\ProgramData\Jobman Lab\agents\{{ item.name }}\windows-workstation'
+          if (-not (Test-Path -LiteralPath "$state\credentials.json" -PathType Leaf)) {
+            $Ansible.Result = 'missing'
+            return
+          }
+          $document = & 'C:\Program Files\Jobman Lab\bin\jobman-agent.exe' status --json --state-dir $state |
+            ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            $Ansible.Failed = $true
+            $Ansible.Msg = 'could not inspect existing Windows agent credentials'
+            return
+          }
+          $renewalDeadline = [DateTimeOffset]::UtcNow.AddMinutes(1)
+          $certificateExpiry = [DateTimeOffset]::Parse($document.status.certificateExpiresAt)
+          $sessionExpiry = [DateTimeOffset]::Parse($document.status.sessionExpiresAt)
+          if ($certificateExpiry -le $renewalDeadline -or $sessionExpiry -le $renewalDeadline) {
+            $Ansible.Result = 'expired'
+          } else {
+            $Ansible.Result = 'healthy'
+          }
+      become: true
+      become_method: runas
+      become_user: "{{ item.name }}"
+      vars:
+        ansible_become_password: "{{ lab_user_passwords[item.name] }}"
+      loop: "{{ lab_users }}"
+      register: windows_agent_health
+      no_log: true
+
+    - name: Stop Windows workstation agents with expired credentials
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $task = Get-ScheduledTask -TaskName 'Jobman Agent - {{ item.item.name }}' -ErrorAction SilentlyContinue
+          if ($null -ne $task -and $task.State -eq 'Running') {
+            Stop-ScheduledTask -InputObject $task
+            $Ansible.Changed = $true
+          }
+      loop: "{{ windows_agent_health.results }}"
+      when: item.result == 'expired'
+      no_log: true
+
+    - name: Archive expired Windows workstation agent state
+      ansible.windows.win_powershell:
+        script: |
+          $state = 'C:\ProgramData\Jobman Lab\agents\{{ item.item.name }}\windows-workstation'
+          $suffix = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')
+          Move-Item -LiteralPath $state -Destination "$state.expired-$suffix"
+          $Ansible.Changed = $true
+      loop: "{{ windows_agent_health.results }}"
+      when: item.result == 'expired'
+      no_log: true
+
+    - name: Recreate archived Windows agent state directories
+      ansible.windows.win_file:
+        path: "C:\\ProgramData\\Jobman Lab\\agents\\{{ item.name }}\\windows-workstation"
+        state: directory
+      loop: "{{ lab_users }}"
+
+    - name: Inspect Windows agent enrollment state
+      ansible.windows.win_stat:
+        path: "C:\\ProgramData\\Jobman Lab\\agents\\{{ item.name }}\\windows-workstation\\credentials.json"
+      loop: "{{ lab_users }}"
+      register: windows_agent_states
+
+    - name: Enroll Windows workstation agents with one-time tokens
+      ansible.windows.win_command:
+        argv:
+          - C:\Program Files\Jobman Lab\bin\jobman-agent.exe
+          - enroll
+          - --state-dir
+          - "C:\\ProgramData\\Jobman Lab\\agents\\{{ item.item.name }}\\windows-workstation"
+          - --server
+          - "{{ lab_control_endpoint }}"
+          - --target-generation
+          - "{{ (lookup('file', lab_root + '/.lab/control/target-generations.json') | from_json)['windows-workstation'] }}"
+          - --server-ca
+          - C:\ProgramData\Jobman Lab\lab-ca.crt
+        stdin: "{{ (lookup('file', lab_root + '/.lab/credentials/enrollment/windows-workstation-' + item.item.name + '.json') | from_json).spec.token }}\r\n"
+      become: true
+      become_method: runas
+      become_user: "{{ item.item.name }}"
+      vars:
+        ansible_become_password: "{{ lab_user_passwords[item.item.name] }}"
+      loop: "{{ windows_agent_states.results }}"
+      when: not item.stat.exists
+      register: windows_enrollment_attempts
+      failed_when: false
+      no_log: true
+
+    - name: Classify Windows agent enrollment failures without exposing credentials
+      ansible.builtin.set_fact:
+        windows_enrollment_failures: >-
+          {{ (windows_enrollment_failures | default([])) + [{
+            'user': item.item.item.name,
+            'classification':
+              ('unauthenticated' if 'HTTP 401' in (item.stderr | default('')) else
+               'forbidden' if 'HTTP 403' in (item.stderr | default('')) else
+               'conflict' if 'HTTP 409' in (item.stderr | default('')) else
+               'bad request' if 'HTTP 400' in (item.stderr | default('')) else
+               'server CA access' if 'server CA' in (item.stderr | default('')) else
+               'pending enrollment access' if 'pending enrollment' in (item.stderr | default('')) else
+               'credential persistence' if 'credentials' in (item.stderr | default('')) else
+               'state-directory access' if 'state directory' in (item.stderr | default('')) else
+               'filesystem access' if 'Access is denied' in (item.stderr | default('')) else
+               'connection' if 'send request' in (item.stderr | default('')) else
+               'invalid response' if 'invalid session' in (item.stderr | default('')) else
+               'unclassified')
+          }] }}
+      loop: "{{ windows_enrollment_attempts.results }}"
+      when:
+        - not item.skipped | default(false)
+        - item.rc | default(0) != 0
+      no_log: true
+
+    - name: Require successful Windows agent enrollment
+      ansible.builtin.assert:
+        that: windows_enrollment_failures | default([]) | length == 0
+        fail_msg: "Windows agent enrollment failed: {{ windows_enrollment_failures | default([]) }}"
+
+    - name: Run each Windows agent as its unprivileged synthetic user
+      community.windows.win_scheduled_task:
+        name: "Jobman Agent - {{ item.name }}"
+        description: Run the per-user Jobman workstation agent.
+        actions:
+          - path: C:\Program Files\Jobman Lab\bin\jobman-agent.exe
+            arguments: >-
+              run --state-dir "C:\ProgramData\Jobman Lab\agents\{{ item.name }}\windows-workstation"
+              --poll-interval 2s --artifact-store {{ lab_artifact_store }}
+              --artifact-store-version {{ lab_artifact_store_version }}
+              --artifact-root "\\storage01.lab.test\data\jobman\{{ item.name }}"
+        triggers:
+          - type: boot
+        username: "{{ item.name }}"
+        password: "{{ lab_user_passwords[item.name] }}"
+        logon_type: password
+        run_level: limited
+        state: present
+        enabled: true
+      loop: "{{ lab_users }}"
+      no_log: true
+
+    - name: Start Windows agent tasks
+      ansible.windows.win_command: "schtasks.exe /Run /TN \"Jobman Agent - {{ item.name }}\""
+      loop: "{{ lab_users }}"
+      changed_when: true
+      no_log: true
