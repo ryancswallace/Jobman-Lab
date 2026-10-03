@@ -300,8 +300,8 @@ conflicting unmarked clients/users, and preserves the existing clients/users.
 The web client is confidential; native is public. Both require authorization
 code plus S256 PKCE and disable direct password, implicit and service-account
 flows. Exact redirects are `https://dashboard.lab.test:8443/auth/callback` and
-`jobman-dashboard-auth://callback`. The audience is `jobman-dashboard-api`, and
-`azp` identifies the client. Claim `directory_guid` is emitted from a single,
+`jobman-dashboard-auth://callback`. Only access tokens receive the `jobman-dashboard-api` resource audience; ID
+tokens retain their client audience. `azp` identifies the client. Claim `directory_guid` is emitted from a single,
 admin-editable-only `dashboard_directory_guid` attribute; users cannot change
 that identity through self-service. The helper preserves the other realm user
 profile fields. This signed-claim configuration still requires actual

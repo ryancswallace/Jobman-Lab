@@ -74,7 +74,7 @@ def audience_mapper():
     return {'name': 'dashboard-api-audience', 'protocol': 'openid-connect',
             'protocolMapper': 'oidc-audience-mapper', 'consentRequired': False,
             'config': {'included.client.audience': 'jobman-dashboard-api',
-                       'id.token.claim': 'true', 'access.token.claim': 'true'}}
+                       'id.token.claim': 'false', 'access.token.claim': 'true'}}
 
 
 def directory_mapper():

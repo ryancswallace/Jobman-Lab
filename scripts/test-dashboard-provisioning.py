@@ -86,9 +86,10 @@ class ProvisioningTests(unittest.TestCase):
         self.assertEqual(mapper['config']['claim.name'], 'directory_guid')
         self.assertEqual(mapper['config']['user.attribute'], 'dashboard_directory_guid')
         self.assertEqual(mapper['config']['multivalued'], 'false')
-        for mapper in [mapper, OIDC.audience_mapper()]:
-            self.assertEqual(mapper['config']['id.token.claim'], 'true')
-            self.assertEqual(mapper['config']['access.token.claim'], 'true')
+        self.assertEqual(mapper['config']['id.token.claim'], 'true')
+        self.assertEqual(mapper['config']['access.token.claim'], 'true')
+        self.assertEqual(OIDC.audience_mapper()['config']['id.token.claim'], 'false')
+        self.assertEqual(OIDC.audience_mapper()['config']['access.token.claim'], 'true')
 
 
 if __name__ == '__main__':
