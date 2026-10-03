@@ -428,3 +428,32 @@ To stop this fixture, stop only `jobman-dashboard-lab-app` on storage01 and
 `jobman-dashboard-lab-directory` on control01. Preserve private material, broker
 ledger and both dedicated databases for inspection/recovery. Starting the
 fixture does not constitute production, APNs, AD FS or managed-iPhone acceptance.
+
+### Reversible synthetic directory acceptance
+
+`scripts/dashboard-directory-scenario.py` is limited to the approved two-user,
+eight-group LDAPS fixture. It runs as the isolated source identity through
+pinned SSH, refuses unexpected baseline memberships or another pending receipt,
+and keeps exact original state bytes in a private fsynced recovery receipt.
+The only scenarios remove Alice's research viewer contribution, both Alice
+research contributions, or Bob's sole research viewer contribution. It changes
+no mapping, issuer, database grant, original directory, or service configuration.
+Normal Control reconciliation observes changes on its next 30-second cycle.
+
+The Dashboard repository's explicit `TestLabExistingTokensRespectDirectGroupChanges`
+opt-in authenticates and verifies its baseline before any mutation, then checks
+role-union preservation, last-group revocation and restoration using the same
+in-memory tokens. It restores the original state in cleanup and never prints
+tokens. Do not run other membership scenarios or source upgrades concurrently.
+If a test is interrupted, its private `.directory-acceptance-<receipt>.json`
+under `/etc/jobman-dashboard-lab/control-fixture` identifies the recovery action:
+
+```sh
+./scripts/dashboard-directory-scenario.py restore <receipt>
+```
+
+Restoration refuses to overwrite a concurrent external state change. Inspect
+such a failure; do not delete the receipt or reset the fixture. Restoring the
+original synthetic revision is supported because this helper uses it only as
+a within-connection consistency value, not a claim about corporate AD USN
+monotonicity. Keep these results qualified as synthetic directory acceptance.
