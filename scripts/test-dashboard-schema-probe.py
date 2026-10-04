@@ -118,7 +118,7 @@ class SchemaProbeTests(unittest.TestCase):
         called.assert_not_called()
 
     def test_private_files_exact_mode_and_no_overwrite(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             root=Path(tmp);previous=os.umask(0o777)
             try:h.save(root/'receipt.json',{'ok':True})
             finally:os.umask(previous)
@@ -128,7 +128,7 @@ class SchemaProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):h.read(root/'receipt.json')
 
     def test_fifo_read_fails_fast(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             path=Path(tmp)/'fifo';os.mkfifo(path,0o600)
             with self.assertRaises(ValueError):h.read(path)
 
@@ -138,7 +138,7 @@ class SchemaProbeTests(unittest.TestCase):
             for field in ('user','group','extra_groups'):kw.pop(field,None)
             return popen(args,**kw)
         raw='time=x level=ERROR msg="dashboard stopped" error="'+p.ERROR+'"\n'
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
             root=Path(tmp)
             code,out,elapsed=g.captured([sys.executable,'-c','import sys;sys.stderr.write('+repr(raw)+');sys.exit(1)'],os.getuid(),root,'actual')
             self.assertTrue(p.refusal(code,out,elapsed)['refused']);self.assertEqual((root/'actual.log').read_bytes(),out)
@@ -148,7 +148,7 @@ class SchemaProbeTests(unittest.TestCase):
         def local(args,**kw):
             for field in ('user','group','extra_groups'):kw.pop(field,None)
             child=popen(args,**kw);children.append(child);return child
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
             with self.assertRaisesRegex(ValueError,'process_output_bound'):
                 g.captured([sys.executable,'-c','import os;os.write(1,b"x"*100000);__import__("time").sleep(10)'],os.getuid(),Path(tmp),'overflow')
             self.assertLessEqual((Path(tmp)/'overflow.log').stat().st_size,65536);self.assertIsNotNone(children[0].returncode)
@@ -158,14 +158,14 @@ class SchemaProbeTests(unittest.TestCase):
         def local(args,**kw):
             for field in ('user','group','extra_groups'):kw.pop(field,None)
             child=popen(args,**kw);children.append(child);return child
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
             with self.assertRaisesRegex(ValueError,'process_timeout'):
                 g.captured([sys.executable,'-c','__import__("time").sleep(10)'],os.getuid(),Path(tmp),'timeout',seconds=.1)
             self.assertIsNotNone(children[0].returncode)
 
     def test_no_completed_receipt_on_refusal_mismatch(self):
         plan=fixture()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp,patch.object(g.g,'verify_release',return_value='/pinned/binary'),\
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.g,'verify_release',return_value='/pinned/binary'),\
              patch.object(g,'artifacts',return_value={'safe':'a'*64}),patch.object(g,'captured',return_value=(1,b'wrong error',.1)),\
              patch.object(g.socket,'socket'):
             with self.assertRaises(ValueError):g.product(plan,Path(tmp),'refuse')
@@ -173,7 +173,7 @@ class SchemaProbeTests(unittest.TestCase):
 
     def test_runtime_arguments_have_no_ddl_or_secrets(self):
         plan=fixture();raw=('time=x msg="dashboard stopped" error="'+p.ERROR+'"\n').encode()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp,patch.object(g.g,'verify_release',return_value='/pinned/binary'),\
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.g,'verify_release',return_value='/pinned/binary'),\
              patch.object(g,'artifacts',return_value={'safe':'a'*64}),patch.object(g,'captured',return_value=(1,raw,.1)) as called,patch.object(g.socket,'socket'):
             result=g.product(plan,Path(tmp),'refuse');self.assertEqual(set(result['processes']),{'api','worker'})
             for call in called.call_args_list:
@@ -191,7 +191,7 @@ class SchemaProbeTests(unittest.TestCase):
 
     def test_existing_pending_refuses_second_invocation(self):
         plan=fixture()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             root=Path(tmp);h.save(root/'refuse.pending.json',{'preserved':True})
             before=(root/'refuse.pending.json').read_bytes()
             with patch.object(g.os,'geteuid',return_value=0),patch.object(g.sys,'platform','linux'),\
@@ -205,7 +205,7 @@ class SchemaProbeTests(unittest.TestCase):
 
     def test_observe_never_repeats_product(self):
         plan=fixture()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             root=Path(tmp);receipt={'operationId':plan['operationId'],'phase':'refuse','completed':True,'planSHA256':p.sha(p.encoded(plan))}
             h.save(root/'refuse.json',receipt)
             with patch.object(g.os,'geteuid',return_value=0),patch.object(g.sys,'platform','linux'),\
@@ -217,7 +217,7 @@ class SchemaProbeTests(unittest.TestCase):
 
     def test_host_final_database_drift_prevents_completion(self):
         plan=fixture();hashes=plan['implementationSHA256']
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
             root=Path(tmp);args=SimpleNamespace(staging=root,phase='verify',expected_plan_sha256=p.sha(p.encoded(plan)),
                 expected_implementation_sha256=p.sha(p.encoded(hashes)))
             with patch.object(h,'read',return_value=p.encoded(plan)),patch.object(h.p,'sha',wraps=p.sha),\

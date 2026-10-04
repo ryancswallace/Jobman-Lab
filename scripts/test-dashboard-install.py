@@ -124,7 +124,7 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(ValueError):g.verify_secrets(plan,payload)
 
     def test_new_file_permissions_under_restrictive_umask(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);previous=os.umask(0o777)
             try:g.put(root/'value',b'private',os.getuid(),os.getgid());g.directory(root/'dir',os.getuid(),os.getgid(),create=True)
             finally:os.umask(previous)
@@ -133,7 +133,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual((root/'value').read_bytes(),b'private')
 
     def test_tree_rejects_alias_and_does_not_read_link(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);(root/'value').write_bytes(b'bounded');a=g.tree(root)
             (root/'value').write_bytes(b'changed');self.assertNotEqual(a,g.tree(root))
             (root/'link').symlink_to(root/'value')
@@ -162,7 +162,7 @@ class InstallTests(unittest.TestCase):
     def test_observe_never_invokes_mutation(self):
         plan=fixture();receipt={'phase':'database','completed':True,'operationId':plan['operationId'],
                                'planSHA256':p.sha(p.encoded(plan)),'databaseOID':'7'}
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);(root/'database.pending.json').write_text('{}');(root/'database.json').write_bytes(p.encoded(receipt))
             with patch.object(g,'operation',return_value=root),patch.object(g.f,'read',side_effect=lambda path,**_:Path(path).read_bytes()),\
                  patch.object(g,'sql',return_value='7') as sql,patch.object(g,'database') as mutate:
@@ -170,13 +170,13 @@ class InstallTests(unittest.TestCase):
                 self.assertTrue(sql.call_args.args[0].startswith('SELECT'))
 
     def test_uncompleted_observation_is_not_adopted(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);(root/'database.pending.json').write_text('{}')
             with patch.object(g,'operation',return_value=root):
                 with self.assertRaises(FileNotFoundError):g.observe(fixture(),'database',{})
 
     def test_existing_intent_never_reexecutes(self):
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);(root/'upgrade.pending.json').write_text('{}')
             with patch.object(g,'operation',return_value=root),patch.object(g,'marker') as marker:
                 with self.assertRaises(ValueError):g.begin(fixture(),'upgrade')
@@ -223,7 +223,7 @@ class InstallTests(unittest.TestCase):
 
     def test_host_phase_records_intent_before_remote_and_blocks_repeat(self):
         plan=fixture()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);args=SimpleNamespace(phase='baseline',lab_root=Path('/unused'),staging=root,expected_plan_sha256='a'*64,apply=True)
             def remote(*_):
                 self.assertTrue((root/'baseline.pending.json').exists());raise ValueError('response_lost')
@@ -234,7 +234,7 @@ class InstallTests(unittest.TestCase):
 
     def test_retained_state_must_match_before_acceptance_receipt(self):
         plan=fixture()
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as name:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
             root=Path(name);h.h.save(root/'retained-baseline.json',{'reports':2,'retainedSHA256':'a'*64})
             args=SimpleNamespace(phase='verify',selected='upgrade',staging=root,lab_root=Path('/unused'))
             with patch.object(h,'load_plan',return_value=(plan,{})),patch.object(h,'authority'),patch.object(h,'receipt'),\
