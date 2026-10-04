@@ -7,6 +7,7 @@ are admitted by normal Control Store methods; receipts survive uncertain calls.
 """
 import argparse
 import base64
+from contextlib import contextmanager
 from datetime import datetime
 import importlib.util
 import os
@@ -19,6 +20,39 @@ COMMON_SHA = 'deb95b8dc32334cddcbcb2f7c1d24584d43de699212f26661c24499339b8cecb'
 NAMESPACES = {'primary':'4156b832-9be8-40ff-a471-cb3061b6001d', 'secondary':'455525f6-5d8a-4d4f-bea3-2d3f1ed4698f'}
 SOURCE_SHA = '38d5d71cadfbde8147d95ca89aa65a5c8783d983c0b5011055d9b08a0e927e7e'
 RECEIPT = re.compile('[0-9a-f]{32}\\Z')
+
+
+STAGES=frozenset(('host_input','host_transport','host_decode','host_validate','host_receipt','guest_preflight','guest_material','helper_run','guest_cleanup','guest_postflight','guest_barrier'))
+CODES=frozenset(('failed','invalid_result'))
+
+
+class ScenarioFailure(Exception):
+ def __init__(self,stage,code='failed'):
+  if stage not in STAGES or code not in CODES:stage,code='host_decode','invalid_result'
+  self.stage,self.code=stage,code
+  super().__init__('scenario_'+stage+'_'+code)
+
+
+@contextmanager
+def at_stage(stage):
+ try:yield
+ except ScenarioFailure:raise
+ except Exception:raise ScenarioFailure(stage) from None
+
+
+def failure_frame(error,default='host_input'):
+ if not isinstance(error,ScenarioFailure):error=ScenarioFailure(default)
+ return {'scenarioFailure':{'stage':error.stage,'code':error.code}}
+
+
+def checked_result(c,raw):
+ with at_stage('host_decode'):
+  value=c.decode(raw)
+  if isinstance(value,dict) and 'scenarioFailure' in value:
+   failure=value['scenarioFailure']
+   if set(value)!={'scenarioFailure'} or not isinstance(failure,dict) or set(failure)!={'stage','code'} or failure['stage'] not in STAGES or failure['code'] not in CODES:raise ScenarioFailure('host_decode','invalid_result')
+   raise ScenarioFailure(failure['stage'],failure['code'])
+  return value
 
 
 def common_module():
@@ -109,6 +143,9 @@ def directory_preflight(c,profile):
    c.need(pending.exists() and complete.exists() and c.read(pending,8192)==c.read(complete,8192),'unfinished_scale_preparation')
 
 def guest(c,payload):
+ with at_stage('guest_preflight'):return _guest(c,payload)
+
+def _guest(c,payload):
  c.need(os.geteuid()==0 and sys.platform=='linux','guest_root_required')
  c.need(os.uname().nodename.split('.')[0]==('pg01' if payload['action']=='settled' else 'control01'),'fixed_guest')
  profile=payload['profile'];c.need(profile in c.PROFILES and RECEIPT.fullmatch(payload['receipt']),'fixed_scenario')
@@ -119,7 +156,8 @@ def guest(c,payload):
    raw=c.run(['podman','exec','-i','--user','postgres','jobman-postgres','psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','jobman_control','-d',database],("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='500ms'; "+query+' ROLLBACK;').encode(),timeout=9,maximum=8192)
    return c.decode(raw)
   source_query,dashboard_query=barrier_queries(c,fixture,event)
-  source=sql(p['database'],source_query);dashboard=sql('jobman_dashboard',dashboard_query)
+  with at_stage('guest_barrier'):
+   source=sql(p['database'],source_query);dashboard=sql('jobman_dashboard',dashboard_query)
   c.need(source['instance']==p['instance'] and source['epoch']=='1' and type(source['published']) is bool and type(dashboard['settled']) is bool,'barrier_source')
   return {'receipt':payload['receipt'],'case':payload['case'],'deploymentId':p['deployment'],'controlInstanceId':p['instance'],'namespaceId':fixture['namespaceId'],'jobId':event['jobId'],'eventId':event['eventId'],'settled':source['published'] and dashboard['settled']}
  directory_preflight(c,profile)
@@ -139,19 +177,25 @@ def guest(c,payload):
  try:
   fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
   temporary=root/'.multisource-notification-database-url';c.need(not temporary.exists(),'uncertain_private_material')
-  c.put(temporary,dsn.encode()+b'\n')
+  with at_stage('guest_material'):c.put(temporary,dsn.encode()+b'\n')
   try:
    args=[str(c.BINARY),'notifications','--profile',p['cli'],'--root',str(root),'--database-url-file',str(temporary),'--deployment-id',p['deployment'],'--receipt',payload['receipt'],'--action',action]
    if action=='complete':args+=['--case',payload['case']]
-   result=c.decode(c.run(args,timeout=35,maximum=8192,env={'PATH':'/usr/bin:/bin','GOMAXPROCS':'2','GOMEMLIMIT':'256MiB'}))
-  finally:temporary.unlink();c.sync(root)
-  c.need(process(c,profile)==before and c.read(root/'control.env',65536,uid=p['uid'])==raw,'source_changed_during_scenario')
+   with at_stage('helper_run'):
+    result=c.decode(c.run(args,timeout=35,maximum=8192,env={'PATH':'/usr/bin:/bin','GOMAXPROCS':'2','GOMEMLIMIT':'256MiB'}))
+  finally:
+   with at_stage('guest_cleanup'):temporary.unlink();c.sync(root)
+  with at_stage('guest_postflight'):
+   c.need(process(c,profile)==before and c.read(root/'control.env',65536,uid=p['uid'])==raw,'source_changed_during_scenario')
   return result
  finally:os.close(fd)
 '''
 
 
 def main():
+ with at_stage('host_input'):return _main()
+
+def _main():
  parser=argparse.ArgumentParser(description=__doc__)
  parser.add_argument('profile',choices=('primary','secondary'));parser.add_argument('action',choices=('prepare','complete','settled'));parser.add_argument('receipt');parser.add_argument('case',nargs='?',choices=('first','stopped'))
  args=parser.parse_args();c,common_raw=common_module()
@@ -165,17 +209,28 @@ def main():
  host='pg01' if args.action=='settled' else 'control01';connection=connections[host]
  # Both local dependencies and the transmitted program are exact reviewed bytes;
  # all dynamic selections travel as JSON stdin, never shell interpolation.
- code="import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\nprint(c.encoded(guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(Path(__file__).read_bytes().replace(b"if __name__ == '__main__':",b"if False:")).decode())
- raw=c.run(['ssh','-i',connection['ansible_ssh_private_key_file'],'-p',str(connection['ansible_port']),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={state / "known_hosts"}','-o','HostKeyAlgorithms=ssh-ed25519',f'{connection["ansible_user"]}@{connection["ansible_host"]}','sudo python3 -c '+shlex.quote(code)],c.encoded(payload),timeout=50,maximum=8192)
- result=c.decode(raw)
- if args.action=='prepare':validate_fixture(c,result,args.profile,args.receipt);c.retain(path,c.encoded(result))
- elif args.action=='complete':validate_event(c,result,payload['fixture'],args.case);c.retain(directory/(args.receipt+'-'+args.case+'.json'),c.encoded(result))
- else:
-  event=payload['event'];c.need(set(result)=={'receipt','case','deploymentId','controlInstanceId','namespaceId','jobId','eventId','settled'} and all(result[k]==event[k] for k in result if k!='settled') and type(result['settled']) is bool,'barrier_receipt')
+ code="import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\ntry:\n result=guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))\nexcept Exception as error:\n result=failure_frame(error,'guest_preflight')\nprint(c.encoded(result).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(Path(__file__).read_bytes().replace(b"if __name__ == '__main__':",b"if False:")).decode())
+ with at_stage('host_transport'):
+  raw=c.run(['ssh','-i',connection['ansible_ssh_private_key_file'],'-p',str(connection['ansible_port']),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={state / "known_hosts"}','-o','HostKeyAlgorithms=ssh-ed25519',f'{connection["ansible_user"]}@{connection["ansible_host"]}','sudo python3 -c '+shlex.quote(code)],c.encoded(payload),timeout=50,maximum=8192)
+ result=checked_result(c,raw)
+ retain_result(c,result,payload,path,directory)
  sys.stdout.buffer.write(c.encoded(result))
+
+
+def retain_result(c,result,payload,path,directory):
+ with at_stage('host_validate'):
+  if payload['action']=='prepare':validate_fixture(c,result,payload['profile'],payload['receipt'])
+  elif payload['action']=='complete':validate_event(c,result,payload['fixture'],payload['case'])
+  else:
+   event=payload['event'];c.need(set(result)=={'receipt','case','deploymentId','controlInstanceId','namespaceId','jobId','eventId','settled'} and all(result[k]==event[k] for k in result if k!='settled') and type(result['settled']) is bool,'barrier_receipt')
+ if payload['action']!='settled':
+  destination=path if payload['action']=='prepare' else directory/(payload['receipt']+'-'+payload['case']+'.json')
+  with at_stage('host_receipt'):c.retain(destination,c.encoded(result))
 
 
 if __name__ == '__main__':
  try:main()
- except Exception:
-  raise SystemExit('Two-source notification scenario failed; preserve private pending and immutable receipts. No reset or automatic retry was attempted.') from None
+ except Exception as error:
+  import json
+  sys.stderr.write(json.dumps(failure_frame(error),sort_keys=True)+'\n')
+  raise SystemExit(1) from None

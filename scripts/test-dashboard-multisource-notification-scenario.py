@@ -59,11 +59,11 @@ class TwoSourceNotificationTests(unittest.TestCase):
  def test_guest_host_and_root_guard_precede_mutation(self):
   payload={'profile':'primary','action':'prepare','receipt':'a'*32,'case':None}
   with patch.object(g.os,'geteuid',return_value=1),patch.object(g,'process') as process:
-   with self.assertRaises(c.Failure):g.guest(c,payload)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
    process.assert_not_called()
   with patch.object(g.os,'geteuid',return_value=0),patch.object(g.sys,'platform','linux'),patch.object(g.os,'uname') as host,patch.object(g,'process') as process:
    host.return_value.nodename='storage01'
-   with self.assertRaisesRegex(c.Failure,'fixed_guest'):g.guest(c,payload)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
    process.assert_not_called()
 
  def test_barrier_boolean_is_not_a_timer_or_cross_database_write(self):
@@ -151,11 +151,44 @@ class TwoSourceNotificationTests(unittest.TestCase):
     host.return_value.nodename='control01'
     self.assertEqual(g.guest(c,payload),fixture());self.assertFalse((root/'.multisource-notification-database-url').exists());run.assert_called_once()
     run.reset_mock();c.put(root/'.multisource-notification-database-url',b'unknown-prior-operation')
-    with self.assertRaisesRegex(c.Failure,'uncertain_private_material'):g.guest(c,payload)
+    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
     run.assert_not_called();self.assertEqual(c.read(root/'.multisource-notification-database-url'),b'unknown-prior-operation')
     (root/'.multisource-notification-database-url').unlink();run.side_effect=c.Failure('helper_failed')
-    with self.assertRaisesRegex(c.Failure,'helper_failed'):g.guest(c,payload)
+    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_helper_run_failed'):g.guest(c,payload)
     self.assertFalse((root/'.multisource-notification-database-url').exists())
+    run.side_effect=helper
+    with patch.object(g,'process',side_effect=[('1','2','fixed'),('9','10','changed')]):
+     with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_postflight_failed'):g.guest(c,payload)
+    self.assertFalse((root/'.multisource-notification-database-url').exists())
+
+ def test_failed_frames_only_expose_fixed_stage_codes(self):
+  secret='private-dsn-and-token-must-never-appear'
+  for stage in h.STAGES:
+   try:
+    with h.at_stage(stage):raise ValueError(secret)
+   except h.ScenarioFailure as error:
+    frame=h.failure_frame(error)
+    self.assertEqual(frame,{'scenarioFailure':{'stage':stage,'code':'failed'}})
+    self.assertNotIn(secret,str(frame));self.assertNotIn(secret,str(error))
+    with self.assertRaises(h.ScenarioFailure) as parsed:h.checked_result(c,c.encoded(frame))
+    self.assertEqual(parsed.exception.stage,stage)
+  for bad in ({'scenarioFailure':{'stage':secret,'code':'failed'}},{'scenarioFailure':{'stage':'helper_run','code':secret}},{'scenarioFailure':{'stage':'helper_run','code':'failed','extra':secret}}):
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_decode_invalid_result') as failure:h.checked_result(c,c.encoded(bad))
+   self.assertNotIn(secret,str(failure.exception))
+  self.assertEqual(h.failure_frame(ValueError(secret)),{'scenarioFailure':{'stage':'host_input','code':'failed'}})
+
+ def test_host_receipt_failure_preserves_existing_bytes_and_success_shape(self):
+  with tempfile.TemporaryDirectory() as name:
+   directory=Path(name).resolve();path=directory/'fixture.json';payload={'profile':'primary','action':'complete','receipt':'a'*32,'case':'first','fixture':fixture()};result=event()
+   h.retain_result(c,result,payload,path,directory)
+   destination=directory/('a'*32+'-first.json');before=c.read(destination)
+   self.assertEqual(before,c.encoded(result));h.retain_result(c,result,payload,path,directory)
+   self.assertEqual(c.read(destination),before)
+   changed=dict(result,eventId='77000000-0000-4000-8000-000000000002')
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_receipt_failed'):h.retain_result(c,changed,payload,path,directory)
+   self.assertEqual(c.read(destination),before)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_validate_failed'):h.retain_result(c,dict(result,jobId='secret'),payload,path,directory)
+   self.assertEqual(c.read(destination),before)
 
 
 if __name__=='__main__':unittest.main()
