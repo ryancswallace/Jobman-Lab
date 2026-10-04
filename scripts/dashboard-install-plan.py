@@ -15,16 +15,22 @@ if 'b' not in globals():
     b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 need, sha, encoded, decode = b.need, b.sha, b.encoded, b.decode
 FIX = '2e8f1b15c58889c52023d49d396fd600b31eecd2'
-DATABASE = 'jobman_install_v1'
-ROLES = {role: 'jobman_install_'+role for role in ('ddl', 'api', 'worker', 'operator')}
-ROOTS = {role: '/etc/jobman-dashboard-install-'+role+'-lab' for role in ('api', 'worker', 'operator')}
-USERS = {'api': ('jobman-dash-install-api', 21920), 'worker': ('jobman-dash-install-worker', 21921)}
-READER = ('jobman-dash-install-readers', 21922)
-UNITS = {role: 'jobman-dashboard-install-'+role+'-lab' for role in USERS}
-REPORTS = '/var/lib/jobman-dashboard-install-reports-lab'
-RELEASES = '/opt/jobman-dashboard-install-lab/releases'
-CLIENT = 'jobman-dashboard-install-web-v1'
-ORIGIN = 'https://dashboard.lab.test:48443'
+SCOPE = globals().get('SCOPE', 'v1')
+need(SCOPE in ('v1','v2'), 'install_scope')
+DATABASE = 'jobman_install_'+SCOPE
+ROLES = {role: ('jobman_install_' if SCOPE=='v1' else 'jobman_install_v2_')+role for role in ('ddl','api','worker','operator')}
+STEM = 'jobman-dashboard-install' + ('' if SCOPE=='v1' else '-v2')
+ROOTS = {role: '/etc/'+STEM+'-'+role+'-lab' for role in ('api','worker','operator')}
+USERS = {'api': ('jobman-dash-install-api',21920), 'worker': ('jobman-dash-install-worker',21921)} if SCOPE=='v1' else {
+         'api': ('jobman-dash-install2-api',21923), 'worker': ('jobman-dash-install2-worker',21924)}
+READER = ('jobman-dash-install-readers',21922) if SCOPE=='v1' else ('jobman-dash-install2-readers',21925)
+UNITS = {role: STEM+'-'+role+'-lab' for role in USERS}
+REPORTS = '/var/lib/'+STEM+'-reports-lab'
+RELEASES = '/opt/'+STEM+'-lab/releases'
+OPERATIONS = '/var/lib/'+STEM+'-operations'
+CLIENT = 'jobman-dashboard-install-web-'+SCOPE
+PORT = 48443 if SCOPE=='v1' else 49443
+ORIGIN = 'https://dashboard.lab.test:'+str(PORT)
 ISSUER = 'https://oidc.lab.test:8443/realms/jobman-lab'
 CA = '/etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt'
 PRIMARY = {'api': ('/etc/jobman-dashboard-api-lab', 21904), 'worker': ('/etc/jobman-dashboard-worker-lab', 21905)}
@@ -39,6 +45,23 @@ PHASE_HOST = {'stage': 'storage01', 'identity': 'control01', 'database': 'pg01',
 ORDER = tuple(PHASE_HOST)
 MAX_PACKAGE = 128 << 20
 
+
+def validate_previous(value,with_states=True):
+    need(isinstance(value,dict) and set(value)=={'plan','abortedReceipt'},'previous_attempt_shape')
+    old=value['plan']; proof=value['abortedReceipt']
+    need(isinstance(old,dict) and old.get('scope','v1')=='v1' and b.UUID.fullmatch(old['operationId']),
+         'previous_attempt_scope')
+    fields={'format','scope','operationId','planSHA256','originalImplementationSHA256','stopSHA256',
+            'retireSHA256','failureSHA256','failureLogSHA256','acceptanceStartedSHA256','accepted','aborted','states'}
+    need(isinstance(proof,dict) and set(proof)==fields and type(proof['format']) is int and proof['format']==1 and proof['scope']=='v1' and
+         proof['operationId']==old['operationId'] and proof['accepted'] is False and proof['aborted'] is True,
+         'previous_abort_receipt')
+    need(all(isinstance(proof[k],str) and s.HEX.fullmatch(proof[k]) for k in fields if k.endswith('SHA256')) and
+         proof['planSHA256']==sha(encoded(old)) and
+         proof['originalImplementationSHA256']==sha(encoded(old['implementationSHA256'])),'previous_abort_binding')
+    need(isinstance(proof['states'],dict) and (not with_states or set(proof['states'])=={'storage01','control01','pg01'}),
+         'previous_abort_states')
+    return value
 
 def release(candidate):
     need(s.REVISION.fullmatch(candidate['revision']) and s.HEX.fullmatch(candidate['archiveSHA256']), 'candidate_identity')
@@ -91,7 +114,7 @@ def client_spec(secret):
             'secret': secret, 'standardFlowEnabled': True, 'implicitFlowEnabled': False,
             'directAccessGrantsEnabled': False, 'serviceAccountsEnabled': False, 'fullScopeAllowed': False,
             'consentRequired': False, 'redirectUris': [ORIGIN+'/auth/callback'], 'webOrigins': [ORIGIN],
-            'attributes': {'jobman.lab.owner': 'jobman-dashboard-install-v1', 'pkce.code.challenge.method': 'S256'},
+            'attributes': {'jobman.lab.owner': 'jobman-dashboard-install-'+SCOPE, 'pkce.code.challenge.method': 'S256'},
             'protocolMappers': [
                 {'name': 'dashboard-api-audience', 'protocol': 'openid-connect', 'protocolMapper': 'oidc-audience-mapper',
                  'consentRequired': False, 'config': {'included.client.audience': 'jobman-dashboard-api',
@@ -158,9 +181,9 @@ def configs(snapshot, candidates):
         value['logCursorKeyFile'] = generated_name(role, 'log-cursor.key')
         value['observability'] = {'socketPath': '/run/'+UNITS[role]+'/observe.sock'}
         if role == 'api':
-            value['publicOrigin'], value['listen'] = ORIGIN, '10.77.0.10:48443'
+            value['publicOrigin'], value['listen'] = ORIGIN, '10.77.0.10:'+str(PORT)
             value['webRoot'] = release(candidates['baseline'])+'/web'
-            value['encryption'] = {'keyId': 'install-auth-v1', 'keyFile': generated_name(role, 'auth.key')}
+            value['encryption'] = {'keyId': 'install-auth-'+SCOPE, 'keyFile': generated_name(role, 'auth.key')}
             value['oidc']['webClientId'] = CLIENT
             value['oidc']['webClientSecretFile'] = generated_name(role, 'web-secret')
         else:
@@ -210,6 +233,7 @@ def unit(role, candidate, template):
     paths = [ROOTS[peer], ROOTS['operator'], *[v[0] for v in PRIMARY.values()], '/etc/jobman-dashboard-operator-lab',
              '/etc/jobman-dashboard-restore-api-lab', '/etc/jobman-dashboard-restore-worker-lab',
              '/etc/jobman-dashboard-restore-operator-lab', '/etc/jobman-log-broker']
+    if SCOPE=='v2': paths += ['/etc/jobman-dashboard-install-'+r+'-lab' for r in ('api','worker','operator')]
     lines = ['InaccessiblePaths='+' '.join('-'+x for x in paths) if line.startswith('InaccessiblePaths=') else line for line in lines]
     # Limit only the new disposable service's resources; retain package hardening.
     pos = lines.index('[Install]')
@@ -234,7 +258,12 @@ def make(snapshot, candidates, units, hashes, operation, created, generated, gra
     need(set(generated) == {'auth', 'policy', 'cursor', 'web', 'ddl', 'api', 'worker', 'operator'} and
          all(s.HEX.fullmatch(v) for v in generated.values()), 'generated_secret_fingerprints')
     need(set(grants) == {'api', 'worker', 'operator'} and all(s.HEX.fullmatch(v) for v in grants.values()), 'grant_fingerprints')
-    return {'format': 1, 'synthetic': True, 'operationId': operation, 'createdAt': created, 'postFixRevision': FIX,
+    if SCOPE=='v2':
+        for host in snapshot:
+            prior=snapshot[host].get('previousAttempt')
+            validate_previous(prior)
+            need(prior==snapshot['storage01']['previousAttempt'],'previous_attempt_differs')
+    return {**({'scope':'v2'} if SCOPE=='v2' else {}),'format': 1, 'synthetic': True, 'operationId': operation, 'createdAt': created, 'postFixRevision': FIX,
             'snapshot': snapshot, 'candidates': candidates, 'units': units, 'configs': configs_value, 'copies': copies,
             'generatedSHA256': generated, 'grantSHA256': grants, 'implementationSHA256': hashes,
             'forbidden': ['primary-mutation', 'restore-clone-mutation', 'source-enrollment', 'delivery', 'old-client-edit',
@@ -242,5 +271,6 @@ def make(snapshot, candidates, units, hashes, operation, created, generated, gra
 
 
 def validate(plan):
+    need(plan.get('scope','v1')==SCOPE,'install_scope_changed')
     need(plan == make(plan['snapshot'], plan['candidates'], plan['units'], plan['implementationSHA256'],
                      plan['operationId'], plan['createdAt'], plan['generatedSHA256'], plan['grantSHA256']), 'plan_reconstruction')

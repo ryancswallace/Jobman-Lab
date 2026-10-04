@@ -267,8 +267,7 @@ go test -race -tags integration ./internal/auth \
   -run '^TestLab(Installation|FreshInstallation)' -count=1
 ```
 
-With live opt-ins absent, the full scenario skips and four meaningful Go guard
-tests run. The Python tests exercise package/schema identity, fresh role/secret
+With live opt-ins absent, the full scenario skips and the Go guard tests run. The Python tests exercise package/schema identity, fresh role/secret
 separation, actual packaged unit transformations, no cross-role source keys,
 new-client callback policy, private filesystem bounds, primary/restore identity
 preservation, pending-before-effect/no retry, read-only receipt adoption, exact
@@ -276,16 +275,54 @@ operator/DDL DSN pins, and retained-data mismatch rejection. Actual package pair
 source SQL/schema proof, concrete plan review and live phases remain separate
 gates; passing offline tests never authorizes a guest mutation.
 
-## Remaining separate schema-refusal acceptance
+## A separate attempt after a preserved failure
 
-This six-file slice covers a fresh healthy0→18 install and same-schema18 binary
-upgrade/rollback. It does **not yet** implement the separately required unknown or
-newer schema startup-refusal check, so it cannot alone close the whole installation
-acceptance gap. That follow-on needs a separately reviewed throwaway probe database
-and short-lived process/port, leaving this healthy installation and all existing
-schemas intact. First prove the packaged binary can use a valid18-row probe ledger;
-then add only a probe-only unknown/newer ledger entry and require the real packaged
-startup to reject it before binding a listener or starting workers. Preserve exact
-failure classification and before/after database/source evidence. Do not edit a
-healthy installation's migration ledger to perform this check. Root will select
-and review that bounded subphase after the main driver review closes.
+The first `v1` acceptance stopped at its preference request before reports, rules,
+upgrade or rollback. Its exact operation remains failed; the confirmed stop and
+client retirement do not imply successful acceptance. Keep its original archive,
+plan, private run log, pending and completed phase receipts, database, releases,
+keys and empty report root. Do not restart it or create `complete.json` for it.
+
+The driver now accepts only two finite resource profiles. The default `v1`
+retains its original plan format and resources. Explicit `--scope v2` uses
+`jobman_install_v2`, four `jobman_install_v2_*` roles, API/worker UIDs21923/21924,
+reader GID21925, port49443 and client `jobman-dashboard-install-web-v2`.
+Its config, units, releases, reports and operation roots use the fixed
+`jobman-dashboard-install-v2` stem. The fresh preflight must still prove those
+identities, paths, port and database unused. Arbitrary resource names are refused.
+
+Before v2, independently review the separate exact-operation abort helper. It
+hash-checks the failed v1 plan and implementation, run failure/log, acceptance
+intent, confirmed stop and disabled-client receipts. It makes only read-only
+observations of v1 own files/releases/units, disabled client and secret digest,
+ledger, rows and roles, twice. It writes an exclusive host receipt with
+`aborted:true, accepted:false`; it never invokes an old phase or writes a guest
+marker. An incomplete observation retains its pending evidence without an abort
+receipt. No original receipt is rewritten. This helper's exact manifest and
+script hash are separate review inputs, not an installer bypass.
+
+Every v2 command, including snapshot and prepare, additionally requires:
+
+```sh
+--scope v2 --previous-attempt "$REVIEWED_ABORT_RECEIPT" \
+  --expected-previous-attempt-sha256 "$ABORT_RECEIPT_SHA256"
+```
+
+The three-host snapshot embeds that same reviewed envelope. Each later phase
+rechecks v1's exact stopped/disabled state and retained own-state fingerprints.
+Normal primary jobs are outside that prior-attempt fingerprint; the new v2
+snapshot pins the then-current primary/source state independently. `prepare`
+copies the envelope to private `previous-attempt.json` in its staging directory
+for the acceptance harness. The Go harness derives its origin, OIDC client,
+transport allowlist and phase arguments only from the validated finite scope;
+it cannot use a v1 continuation for v2. New keys and secrets are generated for v2.
+A v1 abort receipt cannot satisfy the schema probe's successful-completion gate.
+
+## Separate schema-refusal acceptance
+
+The [schema-refusal driver](DASHBOARD_SCHEMA_REFUSAL.md) is implemented and
+independently reviewed offline. Its live invocation remains separate. It requires
+a successfully completed, stopped installation and preserves that accepted
+installation while testing a separately named probe database. A failed or merely
+aborted installation cannot authorize this follow-on. No schema-refusal result is
+claimed here.

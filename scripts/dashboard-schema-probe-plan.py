@@ -44,12 +44,19 @@ def decode(raw):
         return value
     return json.loads(raw,object_pairs_hook=unique,parse_constant=lambda _ : (_ for _ in ()).throw(Failure('json_number')))
 
+def install_resources(install):
+    scope=install.get('scope','v1')
+    need(scope in ('v1','v2'),'install_scope')
+    return {'users':{'api':21920,'worker':21921} if scope=='v1' else {'api':21923,'worker':21924},
+            'reader':21922 if scope=='v1' else 21925,
+            'releases':'/opt/jobman-dashboard-install'+('' if scope=='v1' else '-v2')+'-lab/releases'}
+
 def configs(install,selected):
     api=copy.deepcopy(install['configs']['api'])
     api['databaseURLFile']=ROOTS['api']+'/database-url'
     api['listen']='127.0.0.1:'+str(PORT)
     api['publicOrigin']='https://dashboard.lab.test:'+str(PORT)
-    api['webRoot']='/opt/jobman-dashboard-install-lab/releases/'+install['candidates'][selected]['revision']+'/web'
+    api['webRoot']=install_resources(install)['releases']+'/'+install['candidates'][selected]['revision']+'/web'
     api['events']={'enabled':False,'deliveryHold':False}
     api['notifications']={'deviceTopics':[]}
     # No real source/identity request is needed to check the ledger. If the

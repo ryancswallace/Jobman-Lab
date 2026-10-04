@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 HERE=Path(__file__).resolve().parent
 
-def load(name):
+def load(name, injected=None):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'))
-    value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
+    value=importlib.util.module_from_spec(spec);value.__dict__.update(injected or {});spec.loader.exec_module(value);return value
 p=load('dashboard-install-plan');g=load('dashboard-install-guest');h=load('install-dashboard-fresh')
 
 
@@ -55,7 +55,77 @@ def fixture():
     return plan
 
 
+
+def aborted_fixture():
+    plan=fixture()
+    proof={'format':1,'scope':'v1','operationId':plan['operationId'],'planSHA256':p.sha(p.encoded(plan)),
+           'originalImplementationSHA256':p.sha(p.encoded(plan['implementationSHA256'])),
+           **dict.fromkeys(('stopSHA256','retireSHA256','failureSHA256','failureLogSHA256','acceptanceStartedSHA256'),'a'*64),
+           'accepted':False,'aborted':True,'states':{host:{'retained':True} for host in ('storage01','control01','pg01')}}
+    return {'plan':plan,'abortedReceipt':proof}
+
+def fixture_v2():
+    scoped=load('dashboard-install-plan',{'SCOPE':'v2'})
+    old=fixture();snap=copy.deepcopy(old['snapshot'])
+    for host in snap:snap[host]['previousAttempt']=aborted_fixture()
+    value=scoped.make(snap,old['candidates'],old['units'],old['implementationSHA256'],
+        '11000000-0000-4000-8000-000000000002',old['createdAt'],old['generatedSHA256'],old['grantSHA256'])
+    return scoped,value
+
 class InstallTests(unittest.TestCase):
+    def test_finite_v2_scope_has_disjoint_resources_and_retains_v1(self):
+        q,plan=fixture_v2();q.validate(plan)
+        self.assertEqual(plan['scope'],'v2');self.assertEqual(q.DATABASE,'jobman_install_v2')
+        self.assertEqual(q.PORT,49443);self.assertEqual(q.CLIENT,'jobman-dashboard-install-web-v2')
+        self.assertEqual([v[1] for v in q.USERS.values()],[21923,21924]);self.assertEqual(q.READER[1],21925)
+        for attr in ('ROLES','ROOTS','UNITS'):
+            self.assertFalse(set(getattr(p,attr).values()) & set(getattr(q,attr).values()))
+        for attr in ('REPORTS','RELEASES','OPERATIONS'):self.assertNotEqual(getattr(p,attr),getattr(q,attr))
+        self.assertEqual(plan['configs']['api']['listen'],'10.77.0.10:49443')
+        self.assertEqual(plan['configs']['api']['reports']['objectAccess']['workerUid'],21924)
+        self.assertTrue(plan['configs']['api']['webRoot'].startswith(q.RELEASES+'/'))
+        self.assertNotIn('scope',fixture())
+        with self.assertRaises(ValueError):p.validate(plan)
+        with self.assertRaises(ValueError):q.validate(fixture())
+        with self.assertRaises(ValueError):load('dashboard-install-plan',{'SCOPE':'arbitrary'})
+
+    def test_v2_requires_exact_failed_attempt_proof_on_every_host(self):
+        q,plan=fixture_v2()
+        for change in (lambda x:x['snapshot']['pg01'].pop('previousAttempt'),
+                       lambda x:x['snapshot']['control01']['previousAttempt']['abortedReceipt'].update(accepted=True),
+                       lambda x:x['snapshot']['storage01']['previousAttempt']['abortedReceipt'].update(format=True),
+                       lambda x:x['snapshot']['storage01']['previousAttempt']['abortedReceipt'].update(extra=1),
+                       lambda x:x['snapshot']['pg01']['previousAttempt']['abortedReceipt']['states'].pop('control01'),
+                       lambda x:x['snapshot']['pg01']['previousAttempt']['plan'].update(operationId='11000000-0000-4000-8000-000000000003')):
+            changed=copy.deepcopy(plan);change(changed)
+            with self.assertRaises((ValueError,KeyError)):q.validate(changed)
+
+    def test_v2_guest_preservation_reads_old_scope_and_never_restarts(self):
+        q,plan=fixture_v2();prior=plan['snapshot']['storage01']['previousAttempt']
+        old=SimpleNamespace(p=p,operation=lambda _:Path('/retained'),tree=lambda _:'a'*64,ROOTS=g.ROOTS,
+            stopped=lambda:None,own_configuration=lambda *_:None,verify_release=lambda *_:None)
+        guest=load('dashboard-install-guest',{'p':q,'prior_guest':old})
+        raw=p.encoded({'completed':True,'stopped':True,'operationId':prior['plan']['operationId']})
+        prior['abortedReceipt']['stopSHA256']=p.sha(raw)
+        with patch.object(guest.f,'read',return_value=raw),patch.object(guest.f,'properties',return_value={'MainPID':'0'}),             patch.object(guest.f,'run') as run:
+            actual=guest.retained_attempt(prior,'storage01',False)
+            prior['abortedReceipt']['states']['storage01']=actual
+            self.assertEqual(guest.retained_attempt(prior,'storage01'),actual);run.assert_not_called()
+            prior['abortedReceipt']['states']['storage01']['operationTreeSHA256']='b'*64
+            with self.assertRaisesRegex(ValueError,'previous_attempt_drift'):guest.retained_attempt(prior,'storage01')
+
+    def test_v2_host_prior_hash_and_explicit_scope_are_mandatory(self):
+        q,_=fixture_v2();host=load('install-dashboard-fresh',{'p':q})
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            path=Path(name)/'aborted.json';raw=p.encoded(aborted_fixture());path.write_bytes(raw);path.chmod(0o600)
+            args=SimpleNamespace(previous_attempt=path,expected_previous_attempt_sha256=p.sha(raw))
+            self.assertEqual(host.previous_attempt(args),aborted_fixture())
+            args.expected_previous_attempt_sha256='b'*64
+            with self.assertRaisesRegex(ValueError,'previous_attempt_changed'):host.previous_attempt(args)
+            with self.assertRaisesRegex(ValueError,'unexpected_previous_attempt'):h.previous_attempt(args)
+        self.assertIn("'SCOPE':value.get('scope','v1')",host.BOOTSTRAP)
+        self.assertIn("'prior_guest':prior_g",host.BOOTSTRAP)
+
     def test_plan_reconstruction_and_fixed_targets(self):
         plan=fixture();p.validate(plan)
         self.assertEqual(plan['postFixRevision'],'2e8f1b15c58889c52023d49d396fd600b31eecd2')

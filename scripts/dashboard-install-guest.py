@@ -24,7 +24,7 @@ for name, filename in [('p', 'dashboard-install-plan.py'), ('f', 'dashboard-depe
     if name not in globals():
         spec = importlib.util.spec_from_file_location(name, HERE/filename)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); globals()[name] = module
-BASE = Path('/var/lib/jobman-dashboard-install-operations')
+BASE = Path(p.OPERATIONS)
 ROOTS = {role: Path(value) for role, value in p.ROOTS.items()}
 RESTORE = [Path('/etc/jobman-dashboard-restore-'+role+'-lab') for role in ('api', 'worker', 'operator')]
 RESTORE += [Path('/var/lib/jobman-dashboard-restore-reports-lab')]
@@ -167,7 +167,7 @@ def free_storage():
     paths += [Path('/run')/unit for unit in p.UNITS.values()]
     paths += [Path('/etc/systemd/system')/(unit+'.service') for unit in p.UNITS.values()]
     p.need(all(not os.path.lexists(path) for path in paths), 'install_path_exists')
-    with socket.socket() as probe: probe.bind(('10.77.0.10', 48443))
+    with socket.socket() as probe: probe.bind(('10.77.0.10', p.PORT))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -221,11 +221,56 @@ def hba_bytes():
 
 def hba_prefix():
     roles = ','.join(p.ROLES.values())
-    return (f'# Disposable Jobman Dashboard install v1\nhostssl {p.DATABASE} {roles} 10.77.0.10/32 scram-sha-256\n'
+    return (f'# Disposable Jobman Dashboard install {p.SCOPE}\nhostssl {p.DATABASE} {roles} 10.77.0.10/32 scram-sha-256\n'
             f'host all {roles} 0.0.0.0/0 reject\nhost all {roles} ::/0 reject\n').encode()
 
 
-def snapshot(host, revision):
+def retained_attempt(value,host,require_abort=True):
+    p.validate_previous(value,with_states=require_abort)
+    old=prior_guest; plan=value['plan']; proof=value['abortedReceipt']; old.p.validate(plan)
+    root=old.operation(plan)
+    p.need(not (root/'upgrade.pending.json').exists() and not (root/'rollback.pending.json').exists(),
+           'previous_transition_admitted')
+    result={'operationId':plan['operationId'],'operationTreeSHA256':old.tree(root)}
+    if host=='storage01':
+        raw=f.read(root/'stop.json')
+        p.need(p.sha(raw)==proof['stopSHA256'],'previous_stop_receipt')
+        stopped_value=p.decode(raw)
+        p.need(stopped_value.get('stopped') is True and stopped_value.get('completed') is True and
+               stopped_value.get('operationId')==plan['operationId'],'previous_not_stopped')
+        old.stopped();old.own_configuration(plan,'baseline')
+        result['trees']={str(path):old.tree(path) for path in [*old.ROOTS.values(),Path(old.p.REPORTS)]}
+        result['units']={unit:f.properties(unit) for unit in old.p.UNITS.values()}
+        for candidate in ('baseline','upgrade'):old.verify_release(plan,candidate)
+        result['releases']={k:v['files'] for k,v in plan['candidates'].items()}
+    elif host=='control01':
+        raw=f.read(root/'retire-identity.json');row=p.decode(raw)
+        p.need(p.sha(raw)==proof['retireSHA256'] and row.get('enabled') is False and row.get('completed') is True and
+               row.get('operationId')==plan['operationId'],'previous_retirement_receipt')
+        admin=old.Identity();client_id=row['clientId']
+        secret=admin.get('clients/'+client_id+'/client-secret')['value']
+        p.need(isinstance(secret,str) and p.sha(secret.encode())==plan['generatedSHA256']['web'],'previous_secret_changed')
+        p.need(old.check_client(admin,secret,True)==client_id,'previous_client_changed')
+        result['clientSHA256']=p.sha(p.encoded(admin.get('clients/'+client_id)))
+        result['clientId']=client_id;result['enabled']=False
+    else:
+        p.need(host=='pg01','previous_host')
+        result['data']=old.data_state(plan)
+        p.need(result['data']['reports']==result['data']['rules']==0,'previous_failure_stage_changed')
+        names=p.decode(old.sql("SELECT coalesce(json_agg(c.relname ORDER BY c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p');",old.p.DATABASE))
+        p.need(1<=len(names)<=128 and all(p.re.fullmatch('dashboard_[a-z_]{1,80}',n) for n in names),'previous_table_names')
+        selects=["SELECT '"+n+"' AS name,count(*) AS count,coalesce(sum(octet_length(to_jsonb(t)::text)),0) AS bytes,encode(sha256(convert_to(coalesce(string_agg(to_jsonb(t)::text,E'\\n' ORDER BY to_jsonb(t)::text),''),'UTF8')),'hex') AS digest FROM public."+n+' t' for n in names]
+        query="BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5000ms'; SET LOCAL lock_timeout='500ms'; SELECT json_agg(row_to_json(x) ORDER BY name) FROM ("+' UNION ALL '.join(selects)+") x; COMMIT;"
+        rows=p.decode(old.sql(query,old.p.DATABASE))
+        p.need(all(x['count']<=1000 and x['bytes']<=1<<20 for x in rows) and sum(x['bytes'] for x in rows)<=8<<20,'previous_data_bound')
+        result['tablesSHA256']=p.sha(p.encoded(rows))
+        roles=','.join("'"+x+"'" for x in old.p.ROLES.values())
+        result['rolesSHA256']=p.sha(old.sql("SELECT json_agg(row_to_json(r) ORDER BY rolname) FROM (SELECT oid,rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,rolreplication,rolconnlimit,rolvaliduntil,rolbypassrls,rolconfig FROM pg_roles WHERE rolname IN ("+roles+")) r").encode())
+    if require_abort:p.need(result==proof['states'][host],'previous_attempt_drift')
+    return result
+
+
+def snapshot(host, revision, previous=None):
     if host == 'storage01':
         free_storage(); configs, materials = {}, {}
         for role, (root, uid) in p.PRIMARY.items():
@@ -255,6 +300,7 @@ def snapshot(host, revision):
 
 def preserved(plan, host):
     before = plan['snapshot'][host]
+    if p.SCOPE=='v2': retained_attempt(before['previousAttempt'],host)
     if host in ('control01', 'storage01'):
         p.need(f.host_snapshot(host, before['preserved']['revision']) == before['preserved'], 'existing_runtime_changed')
         if host == 'storage01': p.need(restore_storage() == before['restore'], 'restore_storage_changed')
@@ -514,7 +560,8 @@ def grants(plan, payload):
         raw = base64.b64decode(value, validate=True)
         p.need(len(raw) <= 256<<10 and p.sha(raw) == plan['grantSHA256'][role], 'grant_sql_changed')
         sql(raw.decode(), p.DATABASE, timeout=35)
-    rows = p.decode(sql("SELECT json_agg(json_build_object('name',rolname,'safe',NOT(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolinherit))) FROM pg_roles WHERE rolname IN ('jobman_install_api','jobman_install_worker','jobman_install_operator')"))
+    role_names=','.join("'"+p.ROLES[role]+"'" for role in ('api','worker','operator'))
+    rows = p.decode(sql("SELECT json_agg(json_build_object('name',rolname,'safe',NOT(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolinherit))) FROM pg_roles WHERE rolname IN ("+role_names+")"))
     p.need(len(rows) == 3 and all(v['safe'] for v in rows), 'runtime_role_privileges')
     return finish(plan, root, 'grants', {'ledgerSHA256': p.sha(p.encoded(install_ledger())), 'runtimeRoles': sorted(v['name'] for v in rows)})
 
@@ -693,7 +740,15 @@ def execute(payload):
     host = socket.gethostname().split('.')[0]; phase = payload['phase']
     p.need(host == payload['host'] and host in ('storage01','control01','pg01'), 'fixed_guest_host')
     with f.bounded(240 if phase in ('baseline','upgrade','rollback') else 150):
-        if phase == 'snapshot': return snapshot(host,payload['revision'])
+        if phase == 'prior-state':
+            p.need(p.SCOPE=='v1','prior_state_scope');return retained_attempt(payload['previousAttempt'],host,False)
+        if phase == 'snapshot':
+            previous=payload.get('previousAttempt')
+            if p.SCOPE=='v2': retained_attempt(previous,host)
+            else: p.need(previous is None,'unexpected_previous_attempt')
+            result=snapshot(host,payload['revision'])
+            if previous: result['previousAttempt']=previous
+            return result
         plan = payload['plan']; p.validate(plan)
         if phase == 'preserved': return preserved(plan,host)
         if phase == 'data': p.need(host == 'pg01','data_host'); return data_state(plan)

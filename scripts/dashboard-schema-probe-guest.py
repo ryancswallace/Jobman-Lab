@@ -18,7 +18,7 @@ import urllib.parse
 # b (source fences) are injected by the reviewed bootstrap, never user imports.
 
 def sql(query,database='postgres',timeout=20):
-    p.need(database in ('postgres',p.DATABASE,'jobman_install_v1'),'sql_database')
+    p.need(database in ('postgres',p.DATABASE,g.p.DATABASE),'sql_database')
     return f.run(['podman','exec','-i','--user','postgres','jobman-postgres','psql','-X','-q','-A','-t',
                   '-U','jobman_control','-v','ON_ERROR_STOP=1','-d',database],
                  'schema_probe_sql',data=query.encode(),timeout=timeout,maximum=1<<20).decode().strip()
@@ -179,16 +179,16 @@ def create_database(plan,values,root):
 def material(plan,values):
     keys=secrets(plan,values)
     for role,path in p.ROOTS.items():
-        uid=p.USERS.get(role,0);g.directory(path,uid,uid,create=True)
+        uid=(g.p.USERS[role][1] if role in g.p.USERS else 0);g.directory(path,uid,uid,create=True)
         g.put(Path(path)/'config.json',p.encoded(plan['configs'][role]),uid,uid)
         g.put(Path(path)/'database-url',dsn(role,keys[role]),uid,uid)
     g.put(Path(p.ROOTS['operator'])/'ddl-url',dsn('ddl',keys['ddl']))
-    for role,path in p.RUN.items():g.directory(path,p.USERS[role],p.USERS[role],create=True)
+    for role,path in p.RUN.items():g.directory(path,g.p.USERS[role][1],g.p.USERS[role][1],create=True)
     return {'configSHA256':{r:p.sha(p.encoded(v)) for r,v in plan['configs'].items()}}
 
 def artifacts(plan):
     for role,path in p.ROOTS.items():
-        uid=p.USERS.get(role,0);g.directory(path,uid,uid)
+        uid=(g.p.USERS[role][1] if role in g.p.USERS else 0);g.directory(path,uid,uid)
         p.need(f.read(Path(path)/'config.json',uid)==p.encoded(plan['configs'][role]),'probe_config_changed')
         parsed=urllib.parse.urlparse(f.read(Path(path)/'database-url',uid).decode().strip())
         p.need(parsed.password is not None and p.sha(parsed.password.encode())==plan['secretSHA256'][role] and
@@ -205,7 +205,7 @@ def captured(argv,uid,root,name,seconds=15):
     try:
         child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
              cwd='/',env={'PATH':'/usr/bin:/bin','GOMAXPROCS':'2','GOMEMLIMIT':'256MiB'},
-             user=uid,group=uid,extra_groups=([p.READER] if uid else []),umask=0o077,start_new_session=True)
+             user=uid,group=uid,extra_groups=([g.p.READER[1]] if uid else []),umask=0o077,start_new_session=True)
         with selectors.DefaultSelector() as selector:
             selector.register(child.stdout,selectors.EVENT_READ)
             while selector.get_map():
@@ -236,14 +236,14 @@ def product(plan,root,phase):
         args=[binary,'--mode','migrate','--config',p.ROOTS['api']+'/config.json','--migration-database-url-file',p.ROOTS['operator']+'/ddl-url']
         code,_,_=captured(args,0,root,'migrate',60);p.need(code==0,'probe_migration_failed');return {'migrated':True}
     if phase=='positive':
-        for role,uid in p.USERS.items():
+        for role,uid in ((role,value[1]) for role,value in g.p.USERS.items()):
             code,_,_=captured([binary,'--mode','check-config','--check-mode',role,'--config',p.ROOTS[role]+'/config.json'],uid,root,'positive-'+role)
             p.need(code==0,'valid_probe_config_required')
         code,raw,_=captured([binary,'status','--operator-config',p.ROOTS['operator']+'/config.json'],0,root,'positive-status')
         p.need(code==0 and isinstance(p.decode(raw),dict),'compatible_schema_status_required')
         p.need(artifacts(plan)==before,'positive_artifact_changed');return {'compatibleSchema':True,'configsValid':True}
     result={}
-    for role,uid in p.USERS.items():
+    for role,uid in ((role,value[1]) for role,value in g.p.USERS.items()):
         with socket.socket() as sock:sock.bind(('127.0.0.1',p.PORT))
         p.need(not os.path.lexists(p.RUN[role]+'/observe.sock'),'preexisting_listener')
         g.marker(root,'refuse-'+role+'.pending',{'operationId':plan['operationId'],'role':role})

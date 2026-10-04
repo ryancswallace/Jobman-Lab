@@ -8,7 +8,8 @@ roles. It does not alter the primary, restore, or fresh-install database.
 The fixed database is `jobman_schema_probe_v1`; its four login roles are
 `jobman_schema_probe_ddl`, `jobman_schema_probe_api`,
 `jobman_schema_probe_worker`, and `jobman_schema_probe_operator`. The API and
-worker reuse only the stopped fresh-install OS identities21920 and21921 and
+worker reuse only the stopped accepted installation’s finite OS identities
+(v1:21920/21921, or v2:21923/21924) and
 read-only access to their existing private local TLS and signing material.
 No new systemd unit or source registration is created. Probe configuration roots
 are `/etc/jobman-dashboard-schema-probe-{api,worker,operator}-lab`, with separate
@@ -24,7 +25,10 @@ The fresh-install `complete.json`, immutable `plan.json`, stopped unit receipts,
 retired test identity receipt, exact original implementation archive and the
 selected candidate archive must be retained. This probe validates each original
 implementation hash before importing it. Pass its frozen `scripts` directory,
-not the potentially newer working checkout.
+not the potentially newer working checkout. The plan’s explicit finite scope
+also selects its exact release root and reader GID (v1:21922, v2:21925).
+No arbitrary resource or UID input is accepted. Failed-v1 abort evidence cannot
+replace the required successful completion of v2.
 
 A completion produced by an independently reviewed installation continuation
 requires the additional `--expected-install-continuation-sha256` input on every

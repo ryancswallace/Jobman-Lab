@@ -61,8 +61,11 @@ def installation(args):
     sources={name:read(args.install_driver/name,256<<10,False).decode() for name in p.INSTALL_FILES}
     p.need({k:p.sha(v.encode()) for k,v in sources.items()}==value['implementationSHA256'],'install_archive_changed')
     # Validate every dependency before importing any reviewed implementation.
+    spec=importlib.util.spec_from_file_location('reviewed_install_plan',args.install_driver/'dashboard-install-plan.py')
+    ip=importlib.util.module_from_spec(spec);ip.SCOPE=value.get('scope','v1');spec.loader.exec_module(ip)
     spec=importlib.util.spec_from_file_location('reviewed_install_host',args.install_driver/'install-dashboard-fresh.py')
-    i=importlib.util.module_from_spec(spec);spec.loader.exec_module(i);i.p.validate(value)
+    i=importlib.util.module_from_spec(spec);i.p=ip;spec.loader.exec_module(i);i.p.validate(value)
+    p.need(getattr(i.p,'SCOPE','v1')==value.get('scope','v1'),'install_scope_changed')
     sources.update({name:read(HERE/name,256<<10,False).decode() for name in p.FILES})
     return i,value,done,sources
 
@@ -81,7 +84,9 @@ try:
  b=module('dashboard-dependency-fault-plan');s=module('dashboard-split-plan')
  f=module('dashboard-dependency-fault-guest',{'p':b})
  up=module('dashboard-control-upgrade-plan',{'b':b});u=module('dashboard-control-upgrade-guest',{'p':up,'f':f})
- ip=module('dashboard-install-plan',{'b':b,'s':s});g=module('dashboard-install-guest',{'p':ip,'f':f,'u':u})
+ install=value.get('install',value.get('plan',{}).get('install',{}))
+ prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v1'});prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u})
+ ip=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':install.get('scope','v1')});g=module('dashboard-install-guest',{'p':ip,'f':f,'u':u,'prior_guest':prior_g})
  p=module('dashboard-schema-probe-plan')
  if set(sources)!=set(p.FILES+p.INSTALL_FILES):raise ValueError()
  z=module('dashboard-schema-probe-guest',{'p':p,'g':g,'f':f,'u':u,'b':b})

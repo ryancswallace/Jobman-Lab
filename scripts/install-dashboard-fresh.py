@@ -15,10 +15,13 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 
-def load(name):
+def load(name,scope=None):
     spec = importlib.util.spec_from_file_location(name,HERE/(name+'.py'))
-    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value); return value
-p = load('dashboard-install-plan'); h = load('dashboard-dependency-faults'); f = h.g
+    value = importlib.util.module_from_spec(spec)
+    if scope is not None: value.SCOPE=scope
+    spec.loader.exec_module(value); return value
+if 'p' not in globals(): p = load('dashboard-install-plan')
+h = load('dashboard-dependency-faults'); f = h.g
 PHASES = ('snapshot','prepare',*p.ORDER,'observe','data','verify','close')
 
 
@@ -57,7 +60,9 @@ try:
  b=module('dashboard-dependency-fault-plan');s=module('dashboard-split-plan')
  f=module('dashboard-dependency-fault-guest',{'p':b})
  up=module('dashboard-control-upgrade-plan',{'b':b});u=module('dashboard-control-upgrade-guest',{'p':up,'f':f})
- p=module('dashboard-install-plan',{'b':b,'s':s});g=module('dashboard-install-guest',{'p':p,'f':f,'u':u})
+ prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v1'})
+ prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u})
+ p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':value.get('scope','v1')});g=module('dashboard-install-guest',{'p':p,'f':f,'u':u,'prior_guest':prior_g})
  result=g.execute(value);print(json.dumps({'ok':True,'result':result},sort_keys=True))
 except Exception as error:
  code=getattr(error,'code','fresh_install_failed')
@@ -66,11 +71,11 @@ except Exception as error:
 
 
 def remote(lab,payload,hashes):
-    allowed = {'snapshot','preserved','data','ledger','empty-schema','observe',*p.ORDER}
+    allowed = {'prior-state','snapshot','preserved','data','ledger','empty-schema','observe',*p.ORDER}
     p.need(payload.get('phase') in allowed and payload.get('host') in h.HOSTS,'remote_boundary')
     sources = {name:h.read(HERE/name,256<<10,False).decode() for name in REMOTE_NAMES}
     p.need(all(p.sha(value.encode()) == hashes[name] for name,value in sources.items()),'implementation_changed')
-    body = p.encoded(dict(payload,_sources=sources,_hashes={name:hashes[name] for name in sources}))
+    body = p.encoded(dict(payload,scope=p.SCOPE,_sources=sources,_hashes={name:hashes[name] for name in sources}))
     p.need(len(body) <= 360<<20,'remote_input_bound')
     timeout = 270 if payload['phase'] in ('baseline','upgrade','rollback') else 170
     raw = f.run(h.ssh_args(lab,payload['host'])+[shlex.join(['sudo','python3','-c',BOOTSTRAP])],
@@ -93,10 +98,20 @@ def schema(repository, revision):
                      for name in sorted(names)])
 
 
+def previous_attempt(args):
+    if p.SCOPE=='v1':
+        p.need(getattr(args,'previous_attempt',None) is None and getattr(args,'expected_previous_attempt_sha256',None) is None,'unexpected_previous_attempt')
+        return None
+    p.need(args.previous_attempt is not None and p.s.HEX.fullmatch(args.expected_previous_attempt_sha256 or ''),'reviewed_previous_attempt_required')
+    raw=h.read(args.previous_attempt,8<<20); value=p.validate_previous(p.decode(raw))
+    p.need(p.sha(raw)==args.expected_previous_attempt_sha256,'previous_attempt_changed')
+    return value
+
+
 def snapshot(args):
     p.need(p.s.REVISION.fullmatch(args.revision or ''),'snapshot_revision')
-    hashes = implementation()
-    value = {host:remote(args.lab_root,{'phase':'snapshot','host':host,'revision':args.revision},hashes) for host in h.HOSTS}
+    hashes = implementation(); previous=previous_attempt(args)
+    value = {host:remote(args.lab_root,{'phase':'snapshot','host':host,'revision':args.revision,**({'previousAttempt':previous} if previous else {})},hashes) for host in h.HOSTS}
     h.save(args.output,value); return {'snapshotSHA256':p.sha(p.encoded(value)),'mutations':False}
 
 
@@ -128,6 +143,10 @@ def prepare(args):
     plan = p.make(p.decode(h.read(args.snapshot,8<<20)),candidates,units,hashes,str(uuid.uuid4()),int(time.time()),
                   {k:p.sha(v) for k,v in secrets.items()},{k:p.sha(v) for k,v in grants.items()})
     p.validate(plan)
+    if p.SCOPE=='v2':
+        previous=previous_attempt(args)
+        p.need(plan['snapshot']['storage01']['previousAttempt']==previous,'previous_attempt_changed')
+        h.save(args.staging/'previous-attempt.json',previous)
     for name,value in [('plan',plan),('secrets',{k:base64.b64encode(v).decode() for k,v in secrets.items()}),
                        ('grant-sql',{k:base64.b64encode(v).decode() for k,v in grants.items()}),
                        ('package-paths',{'baseline':str(args.baseline_archive),'upgrade':str(args.upgrade_archive)}),('pair-review',review)]:
@@ -141,6 +160,10 @@ def prepare(args):
 
 def load_plan(args):
     h.directory(args.staging); raw = h.read(args.staging/'plan.json',8<<20); plan = p.decode(raw); p.validate(plan)
+    if p.SCOPE=='v2':
+        previous=previous_attempt(args)
+        p.need(plan['snapshot']['storage01']['previousAttempt']==previous,'previous_attempt_changed')
+        p.need(p.decode(h.read(args.staging/'previous-attempt.json',8<<20))==previous,'previous_attempt_changed')
     hashes = implementation()
     p.need(p.sha(raw) == args.expected_plan_sha256 and p.sha(p.encoded(hashes)) == args.expected_implementation_sha256 and
            hashes == plan['implementationSHA256'],'reviewed_plan_required')
@@ -227,13 +250,17 @@ def phase(args):
 
 
 def main():
+    global p
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('phase',choices=PHASES)
     parser.add_argument('--lab-root',type=Path,required=True)
     for name in ('staging','snapshot','output','dashboard-root','baseline-archive','upgrade-archive','reviewed-pair'):
         parser.add_argument('--'+name,type=Path)
+    parser.add_argument('--scope',choices=('v1','v2'),default='v1')
+    parser.add_argument('--previous-attempt',type=Path); parser.add_argument('--expected-previous-attempt-sha256')
     parser.add_argument('--revision'); parser.add_argument('--expected-plan-sha256'); parser.add_argument('--expected-implementation-sha256')
     parser.add_argument('--observed-phase',choices=p.ORDER); parser.add_argument('--selected',choices=('baseline','upgrade','rollback'))
     parser.add_argument('--apply',action='store_true'); args = parser.parse_args()
+    p = load('dashboard-install-plan',args.scope)
     p.need(args.lab_root.is_absolute() and args.lab_root.resolve() == args.lab_root,'lab_root')
     with locked(args.lab_root): value = snapshot(args) if args.phase == 'snapshot' else prepare(args) if args.phase == 'prepare' else phase(args)
     sys.stdout.buffer.write(p.encoded(value))

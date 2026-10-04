@@ -41,6 +41,38 @@ class SchemaProbeTests(unittest.TestCase):
         patched=patch.object(g.g,'put',side_effect=lambda path,raw,*args,**kwargs:original(path,raw,os.getuid(),os.getgid()))
         patched.start();self.addCleanup(patched.stop)
 
+    def test_v2_closed_install_uses_its_uid_and_release_scope(self):
+        q,install=t.fixture_v2();configs=p.configs(install,'upgrade')
+        self.assertTrue(configs['api']['webRoot'].startswith(q.RELEASES+'/'))
+        self.assertEqual(p.install_resources(install)['users'],{'api':21923,'worker':21924})
+        self.assertEqual(p.install_resources(install)['reader'],21925)
+        for scope in ('v3',True):
+            changed=copy.deepcopy(install);changed['scope']=scope
+            with self.assertRaises(ValueError):p.install_resources(changed)
+        guest=t.load('dashboard-install-guest',{'p':q})
+        plan=fixture();plan['configs']=configs
+        with patch.object(g,'g',guest),patch.object(guest,'directory') as directory,\
+             patch.object(guest,'put') as put,patch.object(g,'secrets',return_value=dict.fromkeys(p.ROLES,b'a'*64)):
+            g.material(plan,{})
+        owners={str(call.args[0]):call.args[1] for call in directory.call_args_list}
+        self.assertEqual(owners[p.ROOTS['api']],21923);self.assertEqual(owners[p.ROOTS['worker']],21924)
+        self.assertEqual(owners[p.ROOTS['operator']],0)
+        self.assertEqual(owners[p.RUN['api']],21923);self.assertEqual(owners[p.RUN['worker']],21924)
+        configs_written={str(call.args[0]):call.args[2] for call in put.call_args_list if str(call.args[0]).endswith('/config.json')}
+        self.assertEqual(configs_written[p.ROOTS['api']+'/config.json'],21923)
+
+    def test_actual_host_loader_selects_v2_from_pinned_install_plan(self):
+        q,install=t.fixture_v2()
+        install['implementationSHA256']={name:p.sha((LAB/'scripts'/name).read_bytes()) for name in p.INSTALL_FILES}
+        done={'operationId':install['operationId'],'complete':True,'retained':True}
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            root=Path(name);h.save(root/'plan.json',install);h.save(root/'complete.json',done)
+            args=SimpleNamespace(install_staging=root,install_driver=(LAB/'scripts').resolve(),
+                expected_install_plan_sha256=p.sha(p.encoded(install)),expected_install_complete_sha256=p.sha(p.encoded(done)))
+            host,actual,complete,_=h.installation(args)
+            self.assertEqual(host.p.SCOPE,'v2');self.assertEqual(host.p.DATABASE,'jobman_install_v2')
+            self.assertEqual(actual,install);self.assertEqual(complete,done)
+
     def test_distinct_targets_and_no_delivery_or_source_worker(self):
         plan=fixture();self.assertNotEqual(p.DATABASE,t.p.DATABASE)
         self.assertFalse(set(p.ROLES.values())&set(t.p.ROLES.values()))
@@ -239,6 +271,39 @@ class SchemaProbeTests(unittest.TestCase):
             for call in called.call_args_list:
                 argv=call.args[0];self.assertNotIn('--migration-database-url-file',argv)
                 self.assertFalse(any('postgres://' in a for a in argv));self.assertIn(call.args[1],(21920,21921))
+
+    def test_actual_v2_bootstrap_preserves_the_retained_v1_scope(self):
+        _,install=t.fixture_v2();before=install['snapshot']['storage01']
+        before['preserved']={'revision':'a'*40};before['restore']={}
+        sources={name:(LAB/'scripts'/name).read_text() for name in p.INSTALL_FILES}
+        sources.update({name:(HERE/name).read_text() for name in p.FILES})
+        # Execute the actual bootstrap and actual retained_attempt/preserved
+        # functions. Only external filesystem/service primitives are replaced.
+        sources['dashboard-schema-probe-guest.py'] += """
+def execute(payload):
+    install=payload['install'];before=install['snapshot']['storage01'];prior=before['previousAttempt']
+    old=g.prior_guest
+    assert g.p.SCOPE=='v2' and old.p.SCOPE=='v1'
+    raw=p.encoded({'completed':True,'stopped':True,'operationId':prior['plan']['operationId']})
+    prior['abortedReceipt']['stopSHA256']=p.sha(raw)
+    old.operation=lambda _:Path(payload['offlineRoot'])
+    old.tree=lambda _:'a'*64
+    old.stopped=lambda:None
+    old.own_configuration=lambda *_:None
+    old.verify_release=lambda *_:None
+    f.read=lambda *_a,**_k:raw
+    f.properties=lambda _:{'MainPID':'0'}
+    f.host_snapshot=lambda *_:before['preserved']
+    g.restore_storage=lambda:before['restore']
+    prior['abortedReceipt']['states']['storage01']=g.retained_attempt(prior,'storage01',False)
+    return g.preserved(install,'storage01')
+"""
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            payload=p.encoded({'install':install,'offlineRoot':name,'_sources':sources,'_hashes':{k:p.sha(v.encode()) for k,v in sources.items()}})
+            out=io.StringIO()
+            with patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(payload))),patch.object(sys,'stdout',out):
+                exec(compile(h.BOOTSTRAP,'actual-v2-bootstrap','exec'),{'__name__':'test'})
+        self.assertEqual(p.decode(out.getvalue()),{'ok':True,'result':{'preserved':True,'host':'storage01'}})
 
     def test_guest_bootstrap_loads_exact_independent_modules(self):
         sources={name:(LAB/'scripts'/name).read_text() for name in p.INSTALL_FILES}
