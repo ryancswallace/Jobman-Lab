@@ -28,11 +28,47 @@ FILES=('dashboard-control-upgrade-plan.py','dashboard-control-upgrade-guest.py',
        'dashboard-dependency-fault-plan.py','dashboard-dependency-fault-guest.py','dashboard-dependency-faults.py')
 
 
-def candidate(metadata,binary,build_information):
+DEFAULT_TRANSITION='query-04bd83d'
+RUNS_TRANSITION='runs-63641e9'
+RUNS_NEW='63641e922a4452bd6d63d6c41c5726b49fbfa6cf'
+RUNS_SHA='c5d32e3f04bfa3dd5a46c2a75529eb5595b3619c84fbd6a62fbd0074e7b6436d'
+TRANSITIONS=(DEFAULT_TRANSITION,RUNS_TRANSITION)
+
+
+def transition(name=DEFAULT_TRANSITION):
+    need(name in TRANSITIONS,'fixed_transition_required')
+    return {'old':OLD,'new':NEW,'oldSHA256':OLD_SHA,'newSHA256':NEW_SHA} if name==DEFAULT_TRANSITION else {
+        'old':NEW,'new':RUNS_NEW,'oldSHA256':NEW_SHA,'newSHA256':RUNS_SHA}
+
+
+def old_binary(profile,name=DEFAULT_TRANSITION):
+    value=transition(name)
+    return PROFILES[profile]['oldBinary'] if name==DEFAULT_TRANSITION else BINARY_ROOT+'/'+value['oldSHA256']+'/jobman-control'
+
+
+def preservation(value,host):
+    need(isinstance(value,dict) and set(value)==({'installations','sourceArtifacts','schemaProbe'} if host=='pg01' else {'installations','schemaProbe'} if host=='storage01' else {'installations'}),'preservation_shape')
+    need(set(value['installations'])=={'v1','v2','v3'} and all(isinstance(v,str) and HEX.fullmatch(v) for v in value['installations'].values()),'retained_installations')
+    if host in ('pg01','storage01'):need(isinstance(value['schemaProbe'],str) and HEX.fullmatch(value['schemaProbe']),'retained_schema_probe')
+    if host=='pg01':
+        need(set(value['sourceArtifacts'])==set(PROFILES),'source_artifact_profiles')
+        for rows in value['sourceArtifacts'].values():
+            need(set(rows)=={'policies','graphs','nodes','edges','graphJobs'},'source_artifact_shape')
+            for key,limit in [('policies',320),('graphs',1000),('nodes',200000),('edges',200000),('graphJobs',200000)]:
+                row=rows[key]
+                need(set(row)=={'count','sha256'} and type(row['count']) is int and 0<=row['count']<=limit and HEX.fullmatch(row['sha256']),'source_artifact_bound')
+        primary=value['sourceArtifacts']['primary']
+        need(primary['graphs']['count']>=1 and primary['nodes']['count']>=10000 and
+             primary['edges']['count']>=100000 and primary['graphJobs']['count']>=10000,'accepted_graph_missing')
+    return value
+
+
+def candidate(metadata,binary,build_information,name=DEFAULT_TRANSITION):
+    selected=transition(name)
     revision=metadata.get('revision');digest=metadata.get('binarySHA256')
-    need(isinstance(revision,str) and revision==NEW and
+    need(isinstance(revision,str) and revision==selected['new'] and
          metadata.get('os')=='linux' and metadata.get('architecture')=='arm64' and metadata.get('twiceIdentical') is True and
-         metadata.get('version')=='dashboard-lab-'+NEW[:12] and digest==NEW_SHA and sha(binary)==digest,'candidate_metadata')
+         metadata.get('version')=='dashboard-lab-'+selected['new'][:12] and digest==selected['newSHA256'] and sha(binary)==digest,'candidate_metadata')
     need(0<len(binary)<=64<<20 and len(binary)>=20 and binary[:6]==b'\x7fELF\x02\x01' and
          int.from_bytes(binary[18:20],'little')==183,'candidate_elf')
     need(isinstance(build_information,str) and len(build_information)<=65536 and '\x00' not in build_information,'build_information')
@@ -53,8 +89,8 @@ def unb64(value):
     raw=base64.b64decode(value,validate=True);need(0<len(raw)<=32768,'unit_bytes_bound');return raw
 
 
-def transform_unit(profile,raw,new_binary):
-    spec=PROFILES[profile];text=raw.decode()
+def transform_unit(profile,raw,new_binary,name=DEFAULT_TRANSITION):
+    spec=PROFILES[profile];before_binary=old_binary(profile,name);text=raw.decode()
     need(text.endswith('\n') and '\r' not in text and '\\\n' not in text and len(raw)<=32768,'unit_encoding')
     values={};section=''
     for line in text.splitlines():
@@ -62,11 +98,11 @@ def transform_unit(profile,raw,new_binary):
         elif '=' in line and not line.lstrip().startswith(('#',';')):
             key,value=line.split('=',1);values.setdefault((section,key),[]).append(value)
     expected={'Type':'simple','User':spec['user'],'Group':spec['user'],
-              'EnvironmentFile':spec['root']+'/control.env','ExecStart':spec['oldBinary']}
+              'EnvironmentFile':spec['root']+'/control.env','ExecStart':before_binary}
     need(all(values.get(('[Service]',key))==[value] for key,value in expected.items()),'source_unit_semantics')
     need(not any(key[1] in ('ExecStartPre','ExecStartPost','ExecStop','ExecStopPost') for key in values),'source_unit_extra_commands')
-    need(text.count(spec['oldBinary'])==1 and re.fullmatch(re.escape(BINARY_ROOT)+r'/[0-9a-f]{64}/jobman-control',new_binary),'source_unit_binary_sites')
-    return text.replace('ExecStart='+spec['oldBinary']+'\n','ExecStart='+new_binary+'\n').encode()
+    need(text.count(before_binary)==1 and re.fullmatch(re.escape(BINARY_ROOT)+r'/[0-9a-f]{64}/jobman-control',new_binary),'source_unit_binary_sites')
+    return text.replace('ExecStart='+before_binary+'\n','ExecStart='+new_binary+'\n').encode()
 
 
 def source_database(value,profile,ledger):
@@ -90,34 +126,39 @@ def source_database(value,profile,ledger):
     return value
 
 
-def make(snapshot,profile,candidate_value,ledger,implementation,operation,created):
+def make(snapshot,profile,candidate_value,ledger,implementation,operation,created,name=DEFAULT_TRANSITION):
+    selected=transition(name)
     need(profile in PROFILES and b.UUID.fullmatch(operation) and type(created) is int,'plan_identity')
     need(set(snapshot)=={'control01','storage01','pg01'} and set(implementation)==set(FILES) and
          all(HEX.fullmatch(v) for v in implementation.values()),'plan_snapshot_or_implementation')
     need(candidate_value['path']==BINARY_ROOT+'/'+candidate_value['sha256']+'/jobman-control' and
-         candidate_value['revision']==NEW and
-         candidate_value['sha256']==NEW_SHA and HEX.fullmatch(candidate_value['buildInformationSHA256']) and
+         candidate_value['revision']==selected['new'] and
+         candidate_value['sha256']==selected['newSHA256'] and HEX.fullmatch(candidate_value['buildInformationSHA256']) and
          candidate_value['platform']=='linux/arm64' and candidate_value['toolchain']=='go1.26.6' and 0<candidate_value['bytes']<=64<<20,'plan_candidate')
-    for name in PROFILES:source_database(snapshot['pg01']['sources'][name],name,ledger)
+    for source_name in PROFILES:source_database(snapshot['pg01']['sources'][source_name],source_name,ledger)
     b.stable_database(snapshot['pg01']['dashboard'])
+    if name==RUNS_TRANSITION:
+        for target in ('control01','storage01','pg01'):preservation(snapshot[target]['preservation'],target)
+    else:need(all('preservation' not in row for row in snapshot.values()),'legacy_preservation_shape')
     spec=PROFILES[profile];host=snapshot['control01'];unit=unb64(host['unit'])
     need(host['profile']==profile and host['baseline']['revision']==snapshot['storage01']['revision'],'snapshot_selected_source')
     old=host['baseline']['processes'][spec['unit']]
-    need(old['binary']==spec['oldBinary'] and old['binarySHA256']==OLD_SHA and old['uid']==spec['uid'] and
+    need(old['binary']==old_binary(profile,name) and old['binarySHA256']==selected['oldSHA256'] and old['uid']==spec['uid'] and
          old['unitSHA256']==sha(unit),'old_source_binary')
-    after=transform_unit(profile,unit,candidate_value['path'])
+    after=transform_unit(profile,unit,candidate_value['path'],name)
     return {'format':1,'synthetic':True,'profile':profile,'operationId':operation,'createdAt':created,
-            'oldRevision':OLD,'candidate':candidate_value,'ledger':ledger,'snapshot':snapshot,
+            'oldRevision':selected['old'],'candidate':candidate_value,'ledger':ledger,'snapshot':snapshot,
             'beforeUnitSHA256':sha(unit),'afterUnitSHA256':sha(after),'afterUnit':base64.b64encode(after).decode(),
-            'implementationSHA256':implementation,'forbidden':['migration','config-change','helper-repin','hold-change','feed-reset','automatic-retry','rollback']}
+            'implementationSHA256':implementation,**({'transition':name} if name!=DEFAULT_TRANSITION else {}),'forbidden':['migration','config-change','helper-repin','hold-change','feed-reset','automatic-retry','rollback']}
 
 
 def validate(plan):
-    need(plan==make(plan['snapshot'],plan['profile'],plan['candidate'],plan['ledger'],plan['implementationSHA256'],plan['operationId'],plan['createdAt']),'plan_reconstruction')
+    need(plan==make(plan['snapshot'],plan['profile'],plan['candidate'],plan['ledger'],plan['implementationSHA256'],plan['operationId'],plan['createdAt'],plan.get('transition',DEFAULT_TRANSITION)),'plan_reconstruction')
 
 
 def host_preserved(plan,host,current,unit_applied=False,new_process=False):
     baseline=copy.deepcopy(plan['snapshot'][host]['baseline'] if host=='control01' else plan['snapshot'][host])
+    if host=='storage01':baseline.pop('preservation',None)
     if host=='control01':
         spec=PROFILES[plan['profile']];unit=spec['unit'];path='/etc/systemd/system/'+unit+'.service'
         if unit_applied:

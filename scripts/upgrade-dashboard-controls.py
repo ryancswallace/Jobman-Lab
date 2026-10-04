@@ -74,7 +74,7 @@ def remote(lab,payload,hashes):
 
 
 def schema_manifest(repository,revision):
-    p.need(repository.is_absolute() and repository.resolve()==repository and revision in (p.OLD,p.NEW),'source_repository')
+    p.need(repository.is_absolute() and repository.resolve()==repository and revision in (p.OLD,p.NEW,p.RUNS_NEW),'source_repository')
     root='internal/store/postgres/migrations/'
     names=f.run(['git','-C',str(repository),'ls-tree','-r','--name-only',revision,'--',root],'migration_tree',maximum=8192).decode().splitlines()
     p.need(len(names)==21 and all(name.startswith(root) and p.re.fullmatch(r'[0-9]{6}_[a-z_]+\.sql',name[len(root):]) for name in names),'migration_tree_shape')
@@ -88,7 +88,8 @@ def schema_manifest(repository,revision):
 
 def snapshot(args):
     p.need(args.profile in p.PROFILES and p.REVISION.fullmatch(args.dashboard_revision or ''),'snapshot_identity')
-    hashes=implementation();value={host:remote(args.lab_root,{'phase':'snapshot','host':host,'profile':args.profile,'dashboardRevision':args.dashboard_revision},hashes) for host in h.HOSTS}
+    p.transition(args.transition)
+    hashes=implementation();value={host:remote(args.lab_root,{'phase':'snapshot','host':host,'profile':args.profile,'dashboardRevision':args.dashboard_revision,**({'transition':args.transition} if args.transition!=p.DEFAULT_TRANSITION else {})},hashes) for host in h.HOSTS}
     h.save(args.output,value);return {'snapshotSHA256':p.sha(p.encoded(value)),'mutations':False}
 
 
@@ -98,9 +99,9 @@ def prepare(args):
     metadata=p.decode(h.read(args.build/'build-receipt.json',65536,False));binary=h.read(args.build/'jobman-control-1',64<<20,False)
     p.need(binary==h.read(args.build/'jobman-control-2',64<<20,False),'double_build_differs')
     information=f.run([str(args.go),'version','-m',str(args.build/'jobman-control-1')],'candidate_build_information',timeout=10,maximum=65536).decode()
-    candidate=p.candidate(metadata,binary,information)
-    ledger=schema_manifest(args.control_root,p.OLD);p.need(ledger==schema_manifest(args.control_root,p.NEW),'migration_change_forbidden')
-    hashes=implementation();plan=p.make(p.decode(h.read(args.snapshot,4<<20)),args.profile,candidate,ledger,hashes,str(uuid.uuid4()),int(time.time()))
+    selected=p.transition(args.transition);candidate=p.candidate(metadata,binary,information,args.transition)
+    ledger=schema_manifest(args.control_root,selected['old']);p.need(ledger==schema_manifest(args.control_root,selected['new']),'migration_change_forbidden')
+    hashes=implementation();plan=p.make(p.decode(h.read(args.snapshot,4<<20)),args.profile,candidate,ledger,hashes,str(uuid.uuid4()),int(time.time()),args.transition)
     p.validate(plan);h.directory(args.staging,create=True)
     h.save(args.staging/'plan.json',plan)
     # Stage uses the reviewed original artifact and verifies it anew; no secret
@@ -115,6 +116,7 @@ def prepare(args):
 
 def load_plan(args):
     h.directory(args.staging);raw=h.read(args.staging/'plan.json',4<<20);plan=p.decode(raw);p.validate(plan)
+    p.need(plan.get('transition',p.DEFAULT_TRANSITION)==args.transition,'reviewed_transition_required')
     hashes=implementation();p.need(p.sha(raw)==args.expected_plan_sha256 and p.sha(p.encoded(hashes))==args.expected_implementation_sha256 and hashes==plan['implementationSHA256'],'reviewed_plan_required')
     return plan,hashes
 
@@ -172,6 +174,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('phase',choices=PHASES)
     parser.add_argument('--lab-root',type=Path,required=True);parser.add_argument('--profile',choices=p.PROFILES)
     for name in ('staging','snapshot','output','build','control-root','go'):parser.add_argument('--'+name,type=Path)
+    parser.add_argument('--transition',choices=p.TRANSITIONS,default=p.DEFAULT_TRANSITION)
     parser.add_argument('--dashboard-revision');parser.add_argument('--expected-plan-sha256');parser.add_argument('--expected-implementation-sha256');parser.add_argument('--apply',action='store_true')
     args=parser.parse_args();p.need(args.lab_root.is_absolute() and args.lab_root.resolve()==args.lab_root,'lab_root')
     with locked(args.lab_root):result=snapshot(args) if args.phase=='snapshot' else prepare(args) if args.phase=='prepare' else phase(args)

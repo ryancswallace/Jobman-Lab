@@ -142,7 +142,136 @@ def check_databases(plan):
     return {'databasePreserved':True}
 
 
+# Additional read-only proof is used only by the named run-catalog transition.
+INSTALL_SCOPES=('v1','v2','v3')
+
+
+def retained_tree(root):
+    root=Path(root);rows=[];total=0;pending=[root]
+    while pending:
+        path=pending.pop();info=path.lstat()
+        p.need(path.resolve()==path and len(path.relative_to(root).parts)<=12 and len(rows)<4096,'retained_tree_boundary')
+        row={'path':str(path.relative_to(root)),'uid':info.st_uid,'gid':info.st_gid,'mode':stat.S_IMODE(info.st_mode)}
+        if stat.S_ISDIR(info.st_mode):
+            p.need(not info.st_mode&0o002,'retained_directory_mode');row['directory']=True
+            children=list(path.iterdir());p.need(len(children)<=4096,'retained_tree_count');pending.extend(sorted(children,reverse=True))
+        else:
+            p.need(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and 0<=info.st_size<=96<<20 and not info.st_mode&0o002,'retained_file_boundary')
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+            with os.fdopen(fd,'rb') as stream:
+                before=os.fstat(stream.fileno());p.need(os.path.samestat(info,before),'retained_file_replaced')
+                raw=stream.read((96<<20)+1);after=os.fstat(stream.fileno())
+            named=path.lstat()
+            p.need(len(raw)==before.st_size and (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==
+                   (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) and os.path.samestat(after,named),'retained_file_changed')
+            total+=len(raw);p.need(total<=256<<20,'retained_tree_bytes');row.update(bytes=len(raw),sha256=p.sha(raw))
+        rows.append(row)
+    return p.sha(p.encoded(sorted(rows,key=lambda row:row['path'])))
+
+
+def readonly_sql(database,sql):
+    p.need(database in ('jobman_install_v1','jobman_install_v2','jobman_install_v3','jobman_schema_probe_v1',*[v['database'] for v in p.PROFILES.values()]),'preserved_database_scope')
+    command=['podman','exec','-i','--user','postgres','jobman-postgres','psql','-X','-q','-A','-t','-U','jobman_control','-v','ON_ERROR_STOP=1','-d',database]
+    query="BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='15000ms'; SET LOCAL lock_timeout='500ms'; SET LOCAL TIME ZONE 'UTC'; "+sql+'; COMMIT;'
+    return p.decode(f.run(command,'preserved_database_read',data=query.encode(),timeout=20,maximum=2<<20))
+
+
+def stopped_installation(scope,host):
+    p.need(scope in INSTALL_SCOPES,'retained_install_scope')
+    stem='jobman-dashboard-install'+('' if scope=='v1' else '-'+scope)
+    result={}
+    if host=='storage01':
+        for role in ('api','worker'):
+            unit=stem+'-'+role+'-lab';value=f.properties(unit)
+            p.need(value['ActiveState']=='inactive' and value['MainPID']=='0','retained_install_not_stopped')
+            result[unit]={'state':value,'unitSHA256':p.sha(f.read(value['FragmentPath'],0,0o644,32768))}
+        for root in ['/etc/'+stem+'-'+role+'-lab' for role in ('api','worker','operator')]+[
+                '/var/lib/'+stem+'-reports-lab','/opt/'+stem+'-lab/releases','/var/lib/'+stem+'-operations']:
+            result[root]=retained_tree(root)
+    elif host=='control01':
+        root=Path('/var/lib/'+stem+'-operations');result['operationTreeSHA256']=retained_tree(root)
+        retired=list(root.glob('*/retire-identity.json'))
+        p.need(len(retired)==1,'retained_identity_receipt')
+        receipt=p.decode(f.read(retired[0]));p.need(receipt.get('enabled') is False and receipt.get('completed') is True,'retained_identity_not_disabled')
+        result['retiredIdentitySHA256']=p.sha(p.encoded(receipt))
+    else:
+        p.need(host=='pg01','preservation_host');database='jobman_install_'+scope
+        result=retained_database(database,'jobman_install_'+('' if scope=='v1' else scope+'_'))
+    return p.sha(p.encoded(result))
+
+
+def retained_database(database,prefix):
+    names=readonly_sql(database,"SELECT coalesce(json_agg(c.relname ORDER BY c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p')")
+    p.need(1<=len(names)<=128 and all(p.re.fullmatch('dashboard_[a-z_]{1,80}',name) for name in names),'retained_table_names')
+    selects=["SELECT '"+name+"' AS name,count(*) AS count,coalesce(sum(octet_length(document)),0) AS bytes,encode(sha256(convert_to(coalesce(string_agg(document,E'\\n' ORDER BY document),''),'UTF8')),'hex') AS sha256 FROM (SELECT to_jsonb(t)::text AS document FROM public."+name+" t LIMIT 1001) x" for name in names]
+    rows=readonly_sql(database,'SELECT json_agg(row_to_json(x) ORDER BY name) FROM ('+' UNION ALL '.join(selects)+') x')
+    p.need(all(row['count']<=1000 and row['bytes']<=1<<20 for row in rows) and sum(row['bytes'] for row in rows)<=8<<20,'retained_table_bound')
+    role_names=','.join("'"+prefix+role+"'" for role in ('ddl','api','worker','operator'))
+    result={'tables':rows,'identity':readonly_sql(database,"SELECT json_build_object('databaseOID',(SELECT oid::text FROM pg_database WHERE datname=current_database()),'roles',(SELECT json_agg(row_to_json(r) ORDER BY rolname) FROM (SELECT oid,rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,rolreplication,rolconnlimit,rolvaliduntil,rolbypassrls,rolconfig FROM pg_roles WHERE rolname IN ("+role_names+")) r))")}
+    p.need(len(result['identity']['roles'])==4,'retained_role_count')
+    return result
+
+
+SCHEMA_PROBE_OPERATION='45823b69-a723-4ea7-9907-97b1eecf9457'
+SCHEMA_PROBE_BASE=Path('/var/lib/jobman-dashboard-schema-probe-operations')
+SCHEMA_PROBE_FUTURE={'name':'migrations/999999_lab_schema_probe.sql','sha256':p.sha(b'Lab ledger marker only; no migration body or product schema change.\n')}
+
+
+def retained_schema_probe(host):
+    p.need(host in ('storage01','pg01'),'probe_preservation_host')
+    root=SCHEMA_PROBE_BASE/SCHEMA_PROBE_OPERATION/'loopback-continuation-v1'
+    receipt_path=root/'worker-refusal-v1/worker.json' if host=='storage01' else root/'future.json'
+    row=p.decode(f.read(receipt_path,maximum=2<<20))
+    p.need(row.get('completed') is True and row.get('operationId')==SCHEMA_PROBE_OPERATION and
+           row.get('originalPlanSHA256')=='b9ce73e7d804ab82ccc0c9ccbeac2238c016d434f1b93168b809804c7eebc178','completed_schema_probe_required')
+    if host=='storage01':
+        p.need(row.get('originalContinuationSHA256')=='20ddfb2d42de4e2af9347b2fa9d54afe0cdda4a87dbb1838993e345360a10275' and
+               row.get('workerSupplementSHA256')=='8d98ebfdfb4d9d96160c924ce5422936592db33d88c16d4f518f678a246b2065' and row.get('api',{}).get('refused') is True and
+               row.get('worker',{}).get('refused') is True,'completed_schema_probe_required')
+    else:
+        p.need(row.get('phase')=='future' and row.get('continuationSHA256')=='20ddfb2d42de4e2af9347b2fa9d54afe0cdda4a87dbb1838993e345360a10275','completed_schema_probe_required')
+    result={'operationsSHA256':retained_tree(SCHEMA_PROBE_BASE)}
+    if host=='storage01':
+        for role,uid in (('api',21926),('worker',21927),('operator',0)):
+            path=Path('/etc/jobman-dashboard-schema-probe-'+role+'-lab');info=path.lstat()
+            p.need(stat.S_ISDIR(info.st_mode) and info.st_uid==info.st_gid==uid and stat.S_IMODE(info.st_mode)==0o700,'probe_root_identity')
+            result[str(path)]=retained_tree(path)
+        for role,uid in (('api',21926),('worker',21927)):
+            path=Path('/run/jobman-dashboard-schema-probe-'+role+'-lab');info=path.lstat()
+            p.need(stat.S_ISDIR(info.st_mode) and info.st_uid==info.st_gid==uid and stat.S_IMODE(info.st_mode)==0o700 and
+                   not any(path.iterdir()),'probe_runtime_not_empty')
+            result[str(path)]=retained_tree(path)
+    else:
+        ledger=readonly_sql('jobman_schema_probe_v1',"SELECT json_agg(json_build_object('name',name,'sha256',sha256) ORDER BY name) FROM dashboard_schema_migrations")
+        p.need(isinstance(ledger,list) and len(ledger)==19 and ledger[-1]==SCHEMA_PROBE_FUTURE and
+               all(set(x)=={'name','sha256'} and p.re.fullmatch(r'migrations/[0-9]{6}_[a-z_]+\.sql',x['name']) and p.HEX.fullmatch(x['sha256']) for x in ledger) and
+               len({x['name'] for x in ledger})==19,'probe_future_ledger_required')
+        result.update(ledger=ledger,database=retained_database('jobman_schema_probe_v1','jobman_schema_probe_'))
+    return p.sha(p.encoded(result))
+
+
+SOURCE_ARTIFACT_SQL="""SELECT json_build_object(
+ 'policies',(SELECT json_build_object('count',count(*),'sha256',encode(sha256(convert_to(coalesce(string_agg(row_to_json(x)::text,E'\\n' ORDER BY namespace_id),''),'UTF8')),'hex')) FROM (SELECT namespace_id,max_active_jobs,max_queued_jobs,max_collection_items,max_graph_nodes,idempotency_retention,published_outbox_retention,revision,created_at,updated_at FROM namespace_policies ORDER BY namespace_id LIMIT 321) x),
+ 'graphs',(SELECT json_build_object('count',count(*),'sha256',encode(sha256(convert_to(coalesce(string_agg(row_to_json(x)::text,E'\\n' ORDER BY id),''),'UTF8')),'hex')) FROM (SELECT id,namespace_id,owner_principal_id,name,labels,request_digest,encode(sha256(convert_to(request_document::text,'UTF8')),'hex') AS request_sha256,max_active,unsatisfied_policy,revision,created_at,updated_at FROM graphs ORDER BY id LIMIT 1001) x),
+ 'nodes',(SELECT json_build_object('count',count(*),'sha256',encode(sha256(convert_to(coalesce(string_agg(row_to_json(x)::text,E'\\n' ORDER BY graph_id,node_index),''),'UTF8')),'hex')) FROM (SELECT * FROM graph_nodes ORDER BY graph_id,node_index LIMIT 200001) x),
+ 'edges',(SELECT json_build_object('count',count(*),'sha256',encode(sha256(convert_to(coalesce(string_agg(row_to_json(x)::text,E'\\n' ORDER BY graph_id,upstream_job_id,downstream_job_id),''),'UTF8')),'hex')) FROM (SELECT * FROM graph_edges ORDER BY graph_id,upstream_job_id,downstream_job_id LIMIT 200001) x),
+ 'graphJobs',(SELECT json_build_object('count',count(*),'sha256',encode(sha256(convert_to(coalesce(string_agg(row_to_json(x)::text,E'\\n' ORDER BY id),''),'UTF8')),'hex')) FROM (SELECT id,namespace_id,graph_id,graph_index,graph_disposition,phase,outcome,revision FROM jobs WHERE graph_id IS NOT NULL ORDER BY id LIMIT 200001) x))"""
+
+
+def preservation(host):
+    value={'installations':{scope:stopped_installation(scope,host) for scope in INSTALL_SCOPES}}
+    if host in ('storage01','pg01'):value['schemaProbe']=retained_schema_probe(host)
+    if host=='pg01':value['sourceArtifacts']={name:readonly_sql(spec['database'],SOURCE_ARTIFACT_SQL) for name,spec in p.PROFILES.items()}
+    return p.preservation(value,host)
+
+
+def check_preservation(plan,host):
+    if plan.get('transition',p.DEFAULT_TRANSITION)==p.RUNS_TRANSITION:
+        p.need(preservation(host)==plan['snapshot'][host]['preservation'],'retained_installation_or_graph_changed')
+
+
 def authority(plan,host,applied=False,new=False):
+    check_preservation(plan,host)
     if host=='pg01':return check_databases(plan)
     if host=='storage01':
         p.host_preserved(plan,host,f.host_snapshot(host,plan['snapshot'][host]['revision']));return
@@ -290,10 +419,13 @@ def execute(value):
     p.need(host in ('pg01','storage01','control01') and socket.gethostname().split('.')[0]==host and os.geteuid()==0,'guest_identity')
     p.need(phase in ('snapshot','authority','stage','apply','restart','observe','verify'),'guest_phase')
     if phase=='snapshot':
+        name=value.get('transition',p.DEFAULT_TRANSITION);p.transition(name)
         with f.bounded(60):
-            if host=='pg01':return databases()
-            if host=='storage01':return f.host_snapshot(host,value['dashboardRevision'])
-            return source_host(value['profile'],value['dashboardRevision'])
+            if host=='pg01':result=databases()
+            elif host=='storage01':result=f.host_snapshot(host,value['dashboardRevision'])
+            else:result=source_host(value['profile'],value['dashboardRevision'])
+            if name==p.RUNS_TRANSITION:result['preservation']=preservation(host)
+            return result
     plan=value['plan'];p.validate(plan);p.need(p.sha(p.encoded(plan))==value['planSHA256'],'reviewed_plan_hash')
     if phase=='authority':
         with f.bounded(60):authority(plan,host,value.get('applied',False),value.get('new',False))

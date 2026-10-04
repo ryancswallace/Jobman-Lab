@@ -1,4 +1,4 @@
-# Two-Control binary-only query upgrade
+# Two-Control binary-only upgrades
 
 This procedure is scoped to the two isolated Dashboard Lab Controls. It replaces
 only one selected source unit's `ExecStart` binary path per reviewed operation.
@@ -150,3 +150,61 @@ converted to a successful upgrade by weakening source or identity checks.
 After both verified upgrades, run the separately reviewed source/dashboard
 functional, two-source aggregate, pagination and scale checks. Those test outcomes
 are additional evidence, not supplied by the binary replacement receipts.
+
+## Fixed run-catalog transition
+
+The additional explicit `--transition runs-63641e9` accepts only deployed
+Control `04bd83db28bc24155c87e0ceea61c047320fca07` (artifact `7faac822…`)
+and candidate `63641e922a4452bd6d63d6c41c5726b49fbfa6cf`. Its complete reviewed
+Linux arm64 binary SHA256 is
+`c5d32e3f04bfa3dd5a46c2a75529eb5595b3619c84fbd6a62fbd0074e7b6436d`.
+The candidate was built twice with Go 1.26.6 from its exact committed source
+archive; the outputs match. Its version is `dashboard-lab-63641e922a44`.
+All 21 migration files match the deployed predecessor byte for byte.
+
+This candidate adds the current-authorized job run list/detail contract and its
+purpose-separated signed read-selector cursor. It also includes previously
+reviewed additive graph-fixture helper source; this procedure builds and stages
+only the Control server executable. The installed fixture helpers stay unchanged.
+The reviewed run-store PostgreSQL integration and exact-head CI results support
+the candidate; they do not prove a deployed upgrade or Dashboard run acceptance.
+
+Pass `--transition runs-63641e9` on **every** snapshot, prepare, stage, apply,
+restart, observe and verify invocation. The selected old executable must be the
+exact existing content-addressed `7faac822…/jobman-control` path. A missing or
+wrong transition, old query-era executable, arbitrary revision or different binary
+is refused. The default `query-04bd83d` retains its previous behavior and plan
+shape; keep all original implementation archives and receipts.
+
+In addition to the original authority and job proofs, this transition captures
+bounded hashes of namespace policy limits/revisions, graph definitions, nodes,
+edges and graph-job phase/outcome/revision. The primary baseline must include at
+least the accepted 10,000-node/100,000-edge graph and its 10,000 jobs. It checks
+the complete retained
+v1/v2/v3 installation databases and role metadata, fixed local config/material,
+report/release/operation trees and inactive service identities. The preserved
+identity-retirement receipts must still say disabled; this is a receipt check,
+not a new Keycloak session or independent query of current client state. Existing
+Keycloak process and unit pins remain part of the original runtime proof.
+
+The completed schema refusal probe is also retained: exact supplemental completion
+provenance, all three config roots, both empty private runtime parents, operation
+receipts, database rows/roles and the 19-entry ledger including its sole future
+marker. This transition refuses a pending or differently proven schema exercise.
+
+These additions are read-only. Each SQL call is a read-only transaction with a
+15-second statement limit and 500-millisecond lock limit. Fixed install tables
+are capped at 1,000 rows each and 8 MiB total returned row material per database
+before hashing. Only counts and digests leave the query. Each fixed filesystem
+tree is limited to 4,096 entries, depth 12, 96 MiB per file and 256 MiB total;
+symlinks, hardlinks, world-writable paths and changing files are rejected.
+No install service is started and no retained failure is relabeled successful.
+The existing 60-second snapshot/authority and 120-second restart bounds remain.
+
+Take a fresh snapshot after all current fault/probe acceptance is closed. The
+primary snapshot must capture the actual current Dashboard process identities;
+never reuse pre-watchdog or previous-install snapshots. Upgrade and fully verify
+the primary first. Then take a new secondary snapshot that preserves the upgraded
+primary. Run current-version functional and run-catalog acceptance separately.
+Source fingerprint changes can make earlier sealed reports historical; preserve
+those reports and their citations rather than weakening the report freshness gate.

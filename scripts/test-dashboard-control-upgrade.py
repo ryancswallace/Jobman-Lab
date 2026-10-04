@@ -222,4 +222,141 @@ class HostTests(unittest.TestCase):
                     with self.assertRaises(ValueError):original(plan)
 
 
+def runs_fixture(profile='primary',primary_upgraded=False):
+    old=fixture(profile);snapshot=copy.deepcopy(old['snapshot']);name=p.RUNS_TRANSITION
+    for source,spec in p.PROFILES.items():
+        before=p.old_binary(source,name)
+        digest=p.NEW_SHA
+        if source=='primary' and primary_upgraded:before=p.BINARY_ROOT+'/'+p.RUNS_SHA+'/jobman-control';digest=p.RUNS_SHA
+        unit=source_unit(source).replace(spec['oldBinary'].encode(),before.encode())
+        process=snapshot['control01']['baseline']['processes'][spec['unit']]
+        process.update(binary=before,binarySHA256=digest,unitSHA256=p.sha(unit),argumentsSHA256=p.sha((before+'\0').encode()))
+        snapshot['control01']['baseline']['files']['/etc/systemd/system/'+spec['unit']+'.service']=p.sha(unit)
+        if source==profile:snapshot['control01']['unit']=base64.b64encode(unit).decode()
+    for host in ('control01','storage01','pg01'):
+        snapshot[host]['preservation']={'installations':dict.fromkeys(('v1','v2','v3'),SHA)}
+        if host!='control01':snapshot[host]['preservation']['schemaProbe']=SHA
+    snapshot['pg01']['preservation']['sourceArtifacts']={source:{key:{'count':count,'sha256':SHA} for key,count in [('policies',spec['scopes']),('graphs',1),('nodes',10000),('edges',100000),('graphJobs',10000)]} for source,spec in p.PROFILES.items()}
+    candidate=dict(old['candidate'],revision=p.RUNS_NEW,sha256=p.RUNS_SHA,path=p.BINARY_ROOT+'/'+p.RUNS_SHA+'/jobman-control')
+    return p.make(snapshot,profile,candidate,old['ledger'],old['implementationSHA256'],OP,int(time.time()),name)
+
+
+class RunsTransitionTests(unittest.TestCase):
+    def test_both_profiles_only_replace_pinned_04_binary_and_require_named_transition(self):
+        for profile in p.PROFILES:
+            plan=runs_fixture(profile,primary_upgraded=profile=='secondary');p.validate(plan)
+            before=p.unb64(plan['snapshot']['control01']['unit'])
+            self.assertEqual(p.unb64(plan['afterUnit']),before.replace(p.old_binary(profile,p.RUNS_TRANSITION).encode(),plan['candidate']['path'].encode(),1))
+            self.assertEqual(plan['oldRevision'],p.NEW)
+            for field,value in [('transition','arbitrary'),('oldRevision',p.OLD)]:
+                bad=copy.deepcopy(plan);bad[field]=value
+                with self.assertRaises(ValueError):p.validate(bad)
+            bad=copy.deepcopy(plan);bad.pop('transition')
+            with self.assertRaises(ValueError):p.validate(bad)
+            with self.assertRaises(ValueError):p.transform_unit(profile,source_unit(profile),plan['candidate']['path'],p.RUNS_TRANSITION)
+        self.assertNotIn('transition',fixture())
+        with self.assertRaises(ValueError):p.transition(None)
+
+    def test_new_candidate_cannot_use_legacy_artifact_or_arbitrary_digest(self):
+        binary=bytearray(32);binary[:6]=b'\x7fELF\x02\x01';binary[18:20]=(183).to_bytes(2,'little');binary.extend(p.RUNS_NEW.encode()+b'\0dashboard-lab-'+p.RUNS_NEW[:12].encode());binary=bytes(binary)
+        meta={'revision':p.RUNS_NEW,'binarySHA256':p.sha(binary),'os':'linux','architecture':'arm64','twiceIdentical':True,'version':'dashboard-lab-'+p.RUNS_NEW[:12]}
+        info='fixture: go1.26.6\n\tbuild\tGOOS=linux\n\tbuild\tGOARCH=arm64\n\tbuild\tCGO_ENABLED=0\n'
+        with patch.object(p,'RUNS_SHA',p.sha(binary)):
+            self.assertEqual(p.candidate(meta,binary,info,p.RUNS_TRANSITION)['revision'],p.RUNS_NEW)
+            with self.assertRaises(ValueError):p.candidate(meta,binary,info)
+            with self.assertRaises(ValueError):p.candidate(dict(meta,binarySHA256=SHA),binary,info,p.RUNS_TRANSITION)
+
+    def test_retained_install_and_graph_proofs_are_required_and_immutable(self):
+        plan=runs_fixture()
+        for host in ('storage01','control01','pg01'):
+            expected=plan['snapshot'][host]['preservation']
+            with patch.object(g,'preservation',return_value=copy.deepcopy(expected)):g.check_preservation(plan,host)
+            changed=copy.deepcopy(expected);changed['installations']['v2']='b'*64
+            with patch.object(g,'preservation',return_value=changed),self.assertRaisesRegex(ValueError,'retained_installation_or_graph_changed'):g.check_preservation(plan,host)
+            invalid=copy.deepcopy(plan);invalid['snapshot'][host].pop('preservation')
+            with self.assertRaises((ValueError,KeyError)):p.validate(invalid)
+        for host in ('storage01','pg01'):
+            changed=copy.deepcopy(plan['snapshot'][host]['preservation']);changed['schemaProbe']='b'*64
+            with patch.object(g,'preservation',return_value=changed),self.assertRaises(ValueError):g.check_preservation(plan,host)
+        for key in ('policies','graphs','nodes','edges','graphJobs'):
+            changed=copy.deepcopy(plan['snapshot']['pg01']['preservation']);changed['sourceArtifacts']['primary'][key]['sha256']='b'*64
+            with patch.object(g,'preservation',return_value=changed),self.assertRaises(ValueError):g.check_preservation(plan,'pg01')
+        with patch.object(g,'preservation',side_effect=AssertionError('legacy gained new scope')):g.check_preservation(fixture(),'pg01')
+
+    def test_preservation_bound_and_boolean_counter_rejected(self):
+        value=runs_fixture()['snapshot']['pg01']['preservation']
+        for count in (True,200001,-1):
+            changed=copy.deepcopy(value);changed['sourceArtifacts']['primary']['edges']['count']=count
+            with self.assertRaises(ValueError):p.preservation(changed,'pg01')
+
+    def test_primary_accepted_graph_must_be_present_before_admission(self):
+        value=runs_fixture()['snapshot']['pg01']['preservation']
+        for field,count in [('graphs',0),('nodes',9999),('edges',99999),('graphJobs',9999)]:
+            changed=copy.deepcopy(value);changed['sourceArtifacts']['primary'][field]['count']=count
+            with self.assertRaisesRegex(ValueError,'accepted_graph_missing'):p.preservation(changed,'pg01')
+
+    def test_retained_tree_real_files_detect_bytes_modes_links_and_missing_path(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            root=Path(name);path=root/'proof';path.write_bytes(b'original');path.chmod(0o600)
+            before=g.retained_tree(root);self.assertEqual(g.retained_tree(root),before)
+            path.write_bytes(b'changed');self.assertNotEqual(g.retained_tree(root),before)
+            path.chmod(0o640);other=g.retained_tree(root);path.chmod(0o600);self.assertNotEqual(g.retained_tree(root),other)
+            alias=root/'alias';alias.symlink_to(path)
+            with self.assertRaises(ValueError):g.retained_tree(root)
+            alias.unlink();os.link(path,alias)
+            with self.assertRaises(ValueError):g.retained_tree(root)
+            alias.unlink();path.unlink();os.mkfifo(path,0o600)
+            with self.assertRaises(ValueError):g.retained_tree(root)
+
+    def test_running_retained_install_is_refused_before_file_scan(self):
+        with patch.object(g.f,'properties',return_value={'ActiveState':'active','MainPID':'10'}),patch.object(g,'retained_tree') as trees:
+            with self.assertRaisesRegex(ValueError,'retained_install_not_stopped'):g.stopped_installation('v2','storage01')
+            trees.assert_not_called()
+
+    def test_readonly_sql_has_fixed_database_and_transaction_bounds(self):
+        with patch.object(g.f,'run',return_value=b'{}') as call:
+            g.readonly_sql('jobman_install_v3','SELECT current_database()')
+        self.assertIn('READ ONLY',call.call_args.kwargs['data'].decode());self.assertIn("statement_timeout='15000ms'",call.call_args.kwargs['data'].decode())
+        self.assertIn('-d',call.call_args.args[0]);self.assertEqual(call.call_args.args[0][-1],'jobman_install_v3')
+        with patch.object(g.f,'run') as call:
+            with self.assertRaises(ValueError):g.readonly_sql('jobman_control','SELECT 1')
+            call.assert_not_called()
+
+    def test_schema_probe_requires_exact_completed_continuation_and_future_ledger(self):
+        base={'completed':True,'operationId':g.SCHEMA_PROBE_OPERATION,'phase':'future',
+              'originalPlanSHA256':'b9ce73e7d804ab82ccc0c9ccbeac2238c016d434f1b93168b809804c7eebc178',
+              'continuationSHA256':'20ddfb2d42de4e2af9347b2fa9d54afe0cdda4a87dbb1838993e345360a10275'}
+        ledger=[{'name':'migrations/%06d_fixture.sql'%i,'sha256':SHA} for i in range(1,19)]+[g.SCHEMA_PROBE_FUTURE]
+        with patch.object(g.f,'read',return_value=p.encoded(base)),patch.object(g,'retained_tree',return_value=SHA),patch.object(g,'readonly_sql',return_value=ledger),patch.object(g,'retained_database',return_value={'safe':SHA}):
+            self.assertRegex(g.retained_schema_probe('pg01'),'^[0-9a-f]{64}$')
+        for field,value in [('completed',1),('operationId',OP),('phase','positive'),('continuationSHA256',SHA)]:
+            row=dict(base);row[field]=value
+            with patch.object(g.f,'read',return_value=p.encoded(row)),patch.object(g,'retained_tree') as tree:
+                with self.assertRaisesRegex(ValueError,'completed_schema_probe_required'):g.retained_schema_probe('pg01')
+                tree.assert_not_called()
+        for changed in (ledger[:-1],ledger[:-1]+[dict(g.SCHEMA_PROBE_FUTURE,sha256=SHA)]):
+            with patch.object(g.f,'read',return_value=p.encoded(base)),patch.object(g,'retained_tree',return_value=SHA),patch.object(g,'readonly_sql',return_value=changed),patch.object(g,'retained_database') as data:
+                with self.assertRaisesRegex(ValueError,'probe_future_ledger_required'):g.retained_schema_probe('pg01')
+                data.assert_not_called()
+
+    def test_snapshot_bootstrap_preserves_transition_and_modules(self):
+        # Execute the actual embedded bootstrap with harmless guest execute only.
+        import json,subprocess
+        sources={name:(HERE/name).read_text() for name in ('dashboard-dependency-fault-plan.py','dashboard-dependency-fault-guest.py','dashboard-control-upgrade-plan.py','dashboard-control-upgrade-guest.py')}
+        sources['dashboard-control-upgrade-guest.py']+='\ndef execute(value):\n return {"transition":p.transition(value["transition"]),"old":p.old_binary("secondary",value["transition"])}\n'
+        body=p.encoded({'phase':'snapshot','host':'control01','transition':p.RUNS_TRANSITION,'_sources':sources,'_hashes':{n:p.sha(v.encode()) for n,v in sources.items()}})
+        answer=json.loads(subprocess.check_output([sys.executable,'-c',h.BOOTSTRAP],input=body))
+        self.assertIs(answer['ok'],True);self.assertEqual(answer['result']['transition']['new'],p.RUNS_NEW)
+        self.assertEqual(answer['result']['old'],p.old_binary('secondary',p.RUNS_TRANSITION))
+
+    def test_host_load_requires_explicit_same_transition(self):
+        plan=runs_fixture()
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            root=Path(name);h.h.save(root/'plan.json',plan)
+            args=type('Args',(),dict(staging=root,expected_plan_sha256=p.sha(p.encoded(plan)),expected_implementation_sha256=p.sha(p.encoded(plan['implementationSHA256'])),transition=p.DEFAULT_TRANSITION))()
+            with patch.object(h,'implementation',return_value=plan['implementationSHA256']):
+                with self.assertRaisesRegex(ValueError,'reviewed_transition_required'):h.load_plan(args)
+                args.transition=p.RUNS_TRANSITION;self.assertEqual(h.load_plan(args)[0],plan)
+
+
 if __name__=='__main__':unittest.main()
