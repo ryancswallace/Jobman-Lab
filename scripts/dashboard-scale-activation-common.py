@@ -121,6 +121,21 @@ def validate_recovery(value,profile,plan):
  c.need(value['status'] in ('replaying','ready','applied'),'recovery_state');return value
 
 
+def validate_coverage_timestamp(stamp):
+ # Go emits up to nanosecond precision; Python3.9 fromisoformat accepts only
+ # three or six fractional digits. Normalize a temporary validation copy,
+ # never the timestamp retained in the original receipt or its digest.
+ c.need(isinstance(stamp,str) and len(stamp)<=35,'coverage_timestamp')
+ match=re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)',stamp)
+ c.need(match is not None,'coverage_timestamp')
+ fraction=match.group(2);zone='+00:00' if match.group(3)=='Z' else match.group(3)
+ normalized=match.group(1)+('.'+(fraction+'000000')[:6] if fraction else '')+zone
+ from datetime import datetime
+ try:valid=datetime.fromisoformat(normalized).utcoffset() is not None
+ except ValueError:valid=False
+ c.need(valid,'coverage_timestamp')
+
+
 def validate_coverage(value,profile,plan,current=None):
  c.need(set(value)=={'recovery','reconciliation'},'coverage_shape');state=validate_recovery(value['recovery'],profile,plan);receipt=value['reconciliation']
  c.need(state['status']=='ready' and set(receipt)=={'planDigest','acknowledgedGap','namespaces','completedAt'} and receipt['planDigest']==state['digest'] and receipt['acknowledgedGap'] is True,'coverage_binding')
@@ -132,9 +147,7 @@ def validate_coverage(value,profile,plan,current=None):
   if row['status'] in ('unavailable','inaccessible'):c.need(count==0 and 'asOf' not in row,'coverage_unavailable_values')
   else:c.need(isinstance(row.get('asOf'),str),'coverage_timestamp')
  c.need(total<=1000000 and isinstance(receipt['completedAt'],str),'coverage_total_bound')
- from datetime import datetime
- for stamp in [receipt['completedAt']]+[row['asOf'] for row in receipt['namespaces'] if 'asOf' in row]:
-  c.need(isinstance(stamp,str) and len(stamp)<=40 and datetime.fromisoformat(stamp.replace('Z','+00:00')).utcoffset() is not None,'coverage_timestamp')
+ for stamp in [receipt['completedAt']]+[row['asOf'] for row in receipt['namespaces'] if 'asOf' in row]:validate_coverage_timestamp(stamp)
  if current is not None:
   c.need(current['id']==state['id'] and current['digest']==state['digest'] and current['gapId']==state['gapId'] and current['feedGeneration']==state['feedGeneration'],'coverage_current_identity')
   if current['status']=='ready':c.need(current['revision']==state['revision'],'coverage_revision_changed')

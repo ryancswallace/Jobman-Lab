@@ -159,6 +159,10 @@ For each profile, use the same common arguments plus `--profile primary` or
 3. `--phase recovery-reconcile` records current-state coverage and prints its
    `coverageSHA256`. This scan does not prove complete historical delivery.
 
+Coverage timestamps use strict RFC3339 with up to nine fractional digits. The
+Python3.9 validator normalizes only a temporary parsing copy; original timestamp
+bytes remain in the retained receipt and reviewed coverage digest.
+
 Review the private coverage file. It contains the ready recovery revision, exact
 namespace list and each namespace's complete/partial/unavailable/inaccessible
 state. Apply the separately reviewed coverage digest:

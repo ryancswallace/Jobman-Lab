@@ -49,6 +49,25 @@ def mutate_file(handoff,name,fn):
 
 
 class ScaleActivation(unittest.TestCase):
+ def test_coverage_nanoseconds_validate_on_python39_without_changing_digest(self):
+  from datetime import datetime
+  class Python39:
+   @staticmethod
+   def fromisoformat(value):
+    fraction=__import__('re').search(r'\.(\d+)',value)
+    if fraction and len(fraction.group(1)) not in (3,6):raise ValueError('Python3.9 fraction')
+    return datetime.fromisoformat(value)
+  for digits in range(10):
+   stamp='2026-10-04T11:10:54'+('.'+'175884721'[:digits] if digits else '')+'Z'
+   with self.subTest(digits=digits),patch.dict('sys.modules',{'datetime':types.SimpleNamespace(datetime=Python39)}):a.validate_coverage_timestamp(stamp)
+  for stamp in ('2026-10-04T11:10:54.17588472Z','2026-10-04T13:10:54.175884721+02:00'):
+   original={'completedAt':stamp,'nested':{'asOf':stamp}};before=c.encoded(original)
+   with patch.dict('sys.modules',{'datetime':types.SimpleNamespace(datetime=Python39)}):
+    a.validate_coverage_timestamp(original['completedAt']);a.validate_coverage_timestamp(original['nested']['asOf'])
+   self.assertEqual(c.encoded(original),before);self.assertEqual(c.sha(c.encoded(original)),c.sha(before))
+  for stamp in ('2026-10-04T11:10:54.1234567890Z','2026-10-04 11:10:54Z','2026-10-04T11:10:54','2026-02-30T11:10:54Z','2026-10-04T25:10:54Z','2026-10-04T11:10:54+24:00','2026-10-04T11:10:54+02:99','2026-10-04T11:10:54.Z'):
+   with self.subTest(stamp=stamp),self.assertRaisesRegex(ValueError,'coverage_timestamp'):a.validate_coverage_timestamp(stamp)
+
  def test_source_registry_transition_requires_real_per_source_checkpoint(self):
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory).resolve()
