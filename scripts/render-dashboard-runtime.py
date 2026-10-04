@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate only the explicitly scoped synthetic runtime configuration."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,10 @@ def private_file(name, value):
     path.chmod(0o600)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--reports', action='store_true', help='Require a reviewed report-capable Dashboard build')
+    args = parser.parse_args(argv)
     fixture = json.loads((STATE / 'fixture-info.json').read_text())
     oidc = json.loads((STATE / 'oidc-public.json').read_text())
     if fixture.get('synthetic') is not True or fixture['endpoint'] != 'https://10.77.0.21:18443' or len(fixture['namespaces']) != 2:
@@ -67,6 +71,12 @@ def main():
                             'publicKeyFile': BROKER + '/dashboard-signing-public.pem', 'namespaceIds': namespaces}],
               'logRoots': [dict(value, root='/data/jobman/alice') for value in mappings],
               'readerConcurrency': 4, 'readerTimeoutMilliseconds': 3000}
+    if args.reports:
+        app['reports'] = {'objectRoot': '/var/lib/jobman-dashboard-app-lab/reports',
+                          'redactionFile': APP + '/redaction.json'}
+        # Deliberately matches only a known synthetic fixture phrase. This is
+        # acceptance configuration, never a production secret-detection policy.
+        private_file('redaction.json', json.dumps({'values': ['metadata and byte delivery'], 'patterns': []}) + '\n')
     for name, value in [('dashboard.json', app), ('broker.json', broker)]:
         private_file(name, json.dumps(value, indent=2) + '\n')
     for role, key, database, output in [('jobman_dashboard', 'JOBMAN_LAB_DASHBOARD_PASSWORD', 'jobman_dashboard', 'database-url'),

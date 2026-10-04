@@ -429,6 +429,44 @@ To stop this fixture, stop only `jobman-dashboard-lab-app` on storage01 and
 ledger and both dedicated databases for inspection/recovery. Starting the
 fixture does not constitute production, APNs, AD FS or managed-iPhone acceptance.
 
+### Opt-in reporting runtime
+
+Keep the initial monitoring deployment unchanged until an exact report-capable
+Dashboard revision has passed independent review and CI. Build its binaries and
+web archive from that clean revision, then explicitly enable reporting:
+
+```sh
+./scripts/configure-dashboard-runtime.sh /absolute/path/to/reviewed-dashboard-build --reports
+./scripts/check-dashboard-runtime.py --reports
+```
+
+The flag adds `reports.objectRoot` and `reports.redactionFile` to the private app
+configuration. Object files live under
+`/var/lib/jobman-dashboard-app-lab/reports`, with mode0700 and service UID21903.
+The service receives filesystem write access to exactly that directory. The
+policy is installed as mode0600 at
+`/etc/jobman-dashboard-app-lab/redaction.json`; its sole bounded literal matches
+known synthetic fixture text so acceptance can prove bytes were redacted without
+modifying original NFS logs. It is not a production redaction policy and contains
+no corporate secrets. Reapply an enabled deployment with `--reports`; the role
+refuses to silently remove that configuration. Stored object pairs are never
+removed by the provisioning workflow.
+
+The existing explicit DDL step applies `000005_report_queue.sql` through the
+separate Dashboard DDL identity, removes its transient guest credential even on
+failure, and grants current-table runtime DML while preserving the read-only
+migration ledger. The readiness flag verifies private storage/policy modes,
+service write path, migration and runtime privileges. Preserve the database,
+private object root and encryption key together when handling recovery.
+
+After deployment, both `metadata` and `include_log_tail` acceptance must use the
+ordinary Control snapshot, broker NFS read, collector, deterministic engine,
+sealed object pair, authorized API and original citation path. Check that the
+synthetic redaction canary is absent from collected bytes and its notice/range
+is disclosed. Existing job/log/target and same-token revocation acceptance must
+remain valid. These checks precede separate browser/native interface acceptance;
+configuration or fixture rendering alone does not prove report delivery.
+
 ### Forward-only synthetic Control upgrades
 
 Completed source preparation intentionally does not rerun migrations. After

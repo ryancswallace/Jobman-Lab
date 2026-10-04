@@ -2,6 +2,7 @@
 set -euo pipefail
 lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$lab_root"
+[[ $# == 0 || ( $# == 1 && ${1-} == --reports ) ]] || { printf 'Usage: %s [--reports]\n' "$0" >&2; exit 1; }
 umask 077
 runtime_root="$lab_root/.lab/dashboard/runtime"
 [[ -s .lab/dashboard/fixture-info.json && -s .lab/dashboard/oidc-public.json ]] || { printf 'Prepare the isolated Control source first.\n' >&2; exit 1; }
@@ -32,5 +33,5 @@ if [[ ! -f "$runtime_root/dashboard-broker-signing-key.pem" ]]; then
 fi
 openssl pkey -in "$runtime_root/dashboard-broker-signing-key.pem" -pubout -out "$runtime_root/dashboard-broker-signing-public.pem" 2>/dev/null
 if [[ ! -f "$runtime_root/encryption-key" ]]; then openssl rand 32 > "$runtime_root/encryption-key"; fi
-python3 scripts/render-dashboard-runtime.py
+python3 scripts/render-dashboard-runtime.py "$@"
 printf 'Private runtime trust/configuration is ready under .lab/dashboard/runtime; no secrets printed.\n'

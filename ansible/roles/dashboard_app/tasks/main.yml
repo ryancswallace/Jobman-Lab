@@ -22,6 +22,47 @@
     group: jobman-dashboard-app
     mode: "0700"
 
+- name: Inspect existing private Dashboard configuration before changing report mode
+  ansible.builtin.stat:
+    path: /etc/jobman-dashboard-app-lab/config.json
+  register: dashboard_existing_configuration
+
+- name: Read existing report mode without disclosing private configuration
+  ansible.builtin.slurp:
+    src: /etc/jobman-dashboard-app-lab/config.json
+  register: dashboard_existing_configuration_data
+  when: dashboard_existing_configuration.stat.exists and not dashboard_reports_enabled
+  no_log: true
+
+- name: Refuse implicit removal of an enabled report configuration
+  ansible.builtin.assert:
+    that:
+      - (((dashboard_existing_configuration_data.content | b64decode | from_json).reports | default({})).objectRoot | default('')) == ''
+    fail_msg: "Reports are already enabled. Reapply with --reports and a reviewed report-capable build."
+  when: dashboard_existing_configuration.stat.exists and not dashboard_reports_enabled
+  no_log: true
+
+- name: Create private report object storage outside the served application tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: jobman-dashboard-app
+    group: jobman-dashboard-app
+    mode: "0700"
+  loop: [/var/lib/jobman-dashboard-app-lab, /var/lib/jobman-dashboard-app-lab/reports]
+  when: dashboard_reports_enabled
+
+- name: Install only the bounded synthetic report redaction policy
+  ansible.builtin.copy:
+    src: "{{ dashboard_runtime_root }}/redaction.json"
+    dest: /etc/jobman-dashboard-app-lab/redaction.json
+    owner: jobman-dashboard-app
+    group: jobman-dashboard-app
+    mode: "0600"
+  when: dashboard_reports_enabled
+  no_log: true
+  notify: Restart isolated Dashboard application
+
 - name: Create binary and static application directories
   ansible.builtin.file:
     path: "{{ item }}"

@@ -4,6 +4,7 @@
 Uses pinned Lab SSH and verified TLS. Does not authenticate an application user,
 print secrets, or replace separate end-to-end identity/authorization acceptance.
 """
+import argparse
 import importlib.util
 from pathlib import Path
 
@@ -13,6 +14,9 @@ spec.loader.exec_module(checks)
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--reports', action='store_true')
+    args = parser.parse_args()
     for host, units in [
         ('control01', [('jobman-dashboard-lab-directory', 'jobman-dashboard-source', '21902'),
                        ('jobman-dashboard-lab-control', 'jobman-dashboard-source', '21902'),
@@ -54,6 +58,28 @@ def main():
     checks.require(result.returncode == 0 and result.stdout.strip() == 'jobman_dashboard|jobman_dashboard\nt\nt|f|f|f',
                    'Runtime identity, TLS or migration-ledger rights are incorrect')
     print('PASS: runtime database TLS and SELECT-only migration ledger; transient DDL credential absent')
+    if args.reports:
+        script = """import json,stat
+from pathlib import Path
+root=Path('/var/lib/jobman-dashboard-app-lab/reports')
+for path in [root.parent,root]:
+ st=path.lstat();assert stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode)==0o700 and st.st_uid==21903
+policy=Path('/etc/jobman-dashboard-app-lab/redaction.json');st=policy.lstat()
+assert stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode)==0o600 and st.st_uid==21903 and st.st_size<4096
+value=json.loads(policy.read_text());assert set(value)=={'values','patterns'} and len(value['values'])==1 and value['patterns']==[]
+config=json.loads(Path('/etc/jobman-dashboard-app-lab/config.json').read_text())
+assert config['reports']=={'objectRoot':str(root),'redactionFile':str(policy)}
+"""
+        result = checks.ssh('storage01', 'sudo -u jobman-dashboard-app python3 -', script)
+        checks.require(result.returncode == 0, 'Report object root, policy mode, owner or configuration is incorrect')
+        result = checks.ssh('storage01', 'sudo systemctl show jobman-dashboard-lab-app --property=ReadWritePaths --value')
+        checks.require(result.returncode == 0 and result.stdout.strip() == '/var/lib/jobman-dashboard-app-lab/reports',
+                       'Report service filesystem write allowance differs')
+        query = "SELECT name FROM dashboard_schema_migrations WHERE name='000005_report_queue.sql'; SELECT bool_and(has_table_privilege(current_user, table_name, privilege)) FROM (VALUES ('dashboard_report_tasks'),('dashboard_report_requesters'),('dashboard_report_idempotency')) AS tables(table_name) CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE')) AS rights(privilege);"
+        result = checks.sql('jobman_dashboard', password, query)
+        checks.require(result.returncode == 0 and result.stdout.strip() == '000005_report_queue.sql\nt',
+                       'Report migration or dedicated runtime table rights are absent')
+        print('PASS: private report object root and synthetic policy; narrow service write allowance; report migration and runtime table rights')
 
 
 if __name__ == '__main__':

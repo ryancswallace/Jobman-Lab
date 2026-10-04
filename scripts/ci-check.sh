@@ -24,6 +24,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-provisioning.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-build.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-directory.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-upgrade.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dashboard-runtime.py
 ruby -r rexml/document -e 'REXML::Document.new(File.read(ARGV.fetch(0)))' \
   packer/http/Autounattend.xml
 
