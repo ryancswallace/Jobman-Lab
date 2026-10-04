@@ -133,6 +133,18 @@ class RestoreApplyTests(unittest.TestCase):
         drift=[dict(v) for v in paused];drift[1]['cursorSHA256']='b'*64
         with self.assertRaisesRegex(ValueError,'checkpoints differ'):verify(drift,{'held':True,'cutoff':cutoff})
 
+    def test_restore_preserves_empty_public_schema_and_rejects_missing_or_wrong_owner(self):
+        with patch.object(guest,'sql',side_effect=['0',guest.DATABASE+'_ddl']) as query:
+            guest.verify_empty_clone_schema()
+            self.assertTrue(all(call.args[0].startswith('SELECT') for call in query.call_args_list))
+        for answers in (['1'],['0',''],['0','jobman_dashboard_ddl'],['0','postgres']):
+            with patch.object(guest,'sql',side_effect=answers):
+                with self.assertRaises(ValueError):guest.verify_empty_clone_schema()
+        import inspect
+        source=inspect.getsource(guest.restore_database)
+        self.assertNotIn('DROP SCHEMA',source)
+        self.assertEqual(source.count('verify_empty_clone_schema()'),2)
+
     def test_fresh_clone_checks_more_than_tables(self):
         query=guest.fresh_database_query()
         for catalog in ('pg_class','pg_proc','pg_type','pg_namespace','pg_extension'):

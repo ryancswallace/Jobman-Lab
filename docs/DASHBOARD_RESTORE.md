@@ -300,8 +300,9 @@ The supported mutation commands also require `--apply`:
    coherent snapshot and within the bounded30-minute exercise window. It restores
    into the exact receipt-bound, empty clone database; public tables, functions,
    types, extra user schemas or extensions all reject an allegedly empty target.
-   Only that empty clone's default `public` schema is removed before the dump
-   recreates it with the new DDL owner. Original databases are never restore targets.
+   The provisioned empty `public` schema must exist with the clone DDL owner and
+   is preserved: PostgreSQL archives can include its TOC entry without emitting
+   a command to recreate it. Original databases are never restore targets.
 5. Exact migration ledger, stable source-event/inbox/delivery/report-task identity
    counts and SHA256 digests must match the backup before grants and startup are
    accepted. Identity verification is bounded to100,000 rows per family and emits

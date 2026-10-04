@@ -700,7 +700,7 @@ def restore_database(payload):
         verify_restored_database(payload, completed=True)
         verify_role_permissions()
         return completed
-    need(sql(fresh_database_query(), DATABASE) == '0', 'Clone schema is not empty')
+    verify_empty_clone_schema()
     receipt = decode(read(root/'database-backup.json', owner=(0, 0), mode=0o600)[0])
     archived = hash_file(root/'dashboard.dump', 1 << 30)
     need(archived['bytes'] == receipt['bytes'] and archived['sha256'] == receipt['sha256'], 'Restore dump checksum differs')
@@ -714,9 +714,9 @@ def restore_database(payload):
     run(['podman','exec','--user','root','jobman-postgres','chown','postgres:postgres',name])
     listing = run(['podman','exec','--user','postgres','jobman-postgres','pg_restore','--list',name],maximum=8<<20)
     need(re.search(rb'^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public ',listing,re.MULTILINE), 'Expected dump public schema entry missing')
-    # Only this just-provisioned, receipt-bound empty clone schema is removed;
-    # pg_restore recreates it as the restricted DDL owner from the exact dump.
-    sql('DROP SCHEMA public;', DATABASE)
+    # PostgreSQL archives may retain a public-schema TOC entry while emitting
+    # no CREATE SCHEMA command. Preserve the verified provisioned empty schema.
+    verify_empty_clone_schema()
     run(['podman','exec','--user','postgres','jobman-postgres','pg_restore','-U','jobman_control','--exit-on-error','--no-owner','--no-acl',
          '--role='+DATABASE+'_ddl','--dbname='+DATABASE,name], timeout=180, maximum=1 << 20)
     ledger = decode(sql("SELECT coalesce(json_agg(json_build_object('name',name,'sha256',sha256) ORDER BY name),'[]') FROM dashboard_schema_migrations", DATABASE))
@@ -729,6 +729,12 @@ def restore_database(payload):
     verify_restored_database(payload)
     verify_role_permissions()
     return finish_phase(payload, root, 'database-restore', {'database': DATABASE, 'schemaVerified': True, 'runtimeGrantsApplied': True, 'manifestSHA256': digest(encoded(ledger))})
+
+
+def verify_empty_clone_schema():
+    need(sql(fresh_database_query(), DATABASE) == '0', 'Clone schema is not empty')
+    need(sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public'", DATABASE) == DATABASE+'_ddl',
+         'Provisioned empty public schema with restricted clone owner required')
 
 
 def fresh_database_query():
