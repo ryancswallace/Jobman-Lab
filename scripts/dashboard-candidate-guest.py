@@ -165,7 +165,7 @@ def capabilities(control):
     document = p.decode(raw); value = document['capabilities']
     r.need(value['instanceId'] == control['expectedInstanceId'] and re.fullmatch('[1-9][0-9]{0,18}', value['recoveryEpoch']), 'capabilities_identity')
     result = {'deploymentId': control['id'], 'instanceId': value['instanceId'], 'recoveryEpoch': value['recoveryEpoch']}
-    if p.TRANSITION == 'rc3-to-rc6':
+    if p.TRANSITION in ('rc3-to-rc6', 'rc6-to-rc7'):
         versions, features = value.get('contractVersions'), value.get('features')
         r.need(document.get('apiVersion') == 'jobman.control/v1alpha1' and document.get('kind') == 'ControlCapabilities' and
                isinstance(versions, list) and len(versions) <= 32 and 'jobman.control/v1alpha1' in versions and

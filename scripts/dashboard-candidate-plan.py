@@ -23,6 +23,15 @@ TRANSITIONS = {
         'new': '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1',
         'archive': '1634cb3c44e9ca1b9321a42783be22fe7254cca8d0c235371de19db593dec85a',
         'version': 'v0.1.0-rc.2', 'revision': 7},
+    # Exact hosted RC7 candidate; same schema and rotated authentication.
+    'rc6-to-rc7': {'old': '633b5e3fdc08cc973e9f318faefccc298c713295',
+        'new': 'd10fb5f813efa3599a0bc5f79b3ca88826210510',
+        'archive': '19b3ded0315e4781f07f3885fdca360371c0ac0d28f19abf9a6c53d0ad7e9956',
+        'binaries': {'bin/jobman-dashboard': '24ce928be7a9bf0cc69f650039b5faf7af3a814fd5707ba06395760980c116c0',
+                     'bin/jobman-log-broker': 'ec6f819c33592bcff4e22d39aef428c7ff03f7f63204b158e9f559ab26eec35c'},
+        'oldBinaries': {'bin/jobman-dashboard': '55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7',
+                        'bin/jobman-log-broker': '1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8'},
+        'version': 'v0.1.0-rc.7', 'revision': 8},
     # Exact hosted RC6 candidate; this fixed profile preserves rotated API auth.
     'rc3-to-rc6': {'old': '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2',
         'new': '633b5e3fdc08cc973e9f318faefccc298c713295',
@@ -67,12 +76,12 @@ def select_transition(name):
     RECOVERIES = (LEGACY_RECOVERY,) if name == DEFAULT_TRANSITION else (LEGACY_RECOVERY, SCALE_RECOVERY)
     OPERATION_NAME = 'operation' if name == DEFAULT_TRANSITION else 'operation-rc2-to-rc3'
     HOST_OPERATION_NAME = '.candidate-upgrade.operation.json' if name == DEFAULT_TRANSITION else '.candidate-upgrade.rc2-to-rc3.operation.json'
-    if name == 'rc3-to-rc6':
+    if name in ('rc3-to-rc6', 'rc6-to-rc7'):
         need(set(profile.get('binaries', {})) == {'bin/jobman-dashboard', 'bin/jobman-log-broker'} and
              all(isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v) for v in profile['binaries'].values()), 'candidate_binary_pins_missing')
         RECOVERY, RECOVERIES = AUTH_RECOVERY, (LEGACY_RECOVERY, SCALE_RECOVERY, AUTH_RECOVERY)
-        OPERATION_NAME = 'operation-rc3-to-rc6'
-        HOST_OPERATION_NAME = '.candidate-upgrade.rc3-to-rc6.operation.json'
+        OPERATION_NAME = 'operation-' + name
+        HOST_OPERATION_NAME = '.candidate-upgrade.' + name + '.operation.json'
 
 
 select_transition(DEFAULT_TRANSITION)
@@ -135,7 +144,7 @@ def transform_config(role, raw):
     if role != 'api':
         return raw
     need(config.get('webRoot') == OLD_ROOT + '/web', 'static_root')
-    if TRANSITION == 'rc3-to-rc6':
+    if TRANSITION in ('rc3-to-rc6', 'rc6-to-rc7'):
         need(config.get('encryption') == AUTHENTICATION, 'rotated_authentication_required')
     result = copy.deepcopy(config); result['webRoot'] = NEW_ROOT + '/web'
     return encoded(result)
@@ -161,7 +170,7 @@ def stable_database(value):
              type(source['unfinishedRecoveries']) is int and source['unfinishedRecoveries'] == 0, 'source_recovery_in_progress')
         need(isinstance(source['namespaceIds'], list) and 1 <= len(source['namespaceIds']) <= 320 and
              all(isinstance(n, str) and UUID.fullmatch(n) for n in source['namespaceIds']), 'database_namespace_shape')
-    if TRANSITION in ('rc2-to-rc3', 'rc3-to-rc6'):
+    if TRANSITION in ('rc2-to-rc3', 'rc3-to-rc6', 'rc6-to-rc7'):
         counts = dict(zip(SOURCE_IDS, (12, 7)))
         need(all(len(source['namespaceIds']) == counts[source['deploymentId']] and
                  len(set(source['namespaceIds'])) == counts[source['deploymentId']] and source['recoveryEpoch'] == '1'
@@ -177,7 +186,7 @@ def stable_database(value):
 
 
 def validate_rotated_snapshot(snapshot):
-    if TRANSITION != 'rc3-to-rc6':
+    if TRANSITION not in ('rc3-to-rc6', 'rc6-to-rc7'):
         return
     all_caps = snapshot['hosts']['storage01']['roles']['worker']['capabilities']
     need(len(all_caps) == 2 and {c['deploymentId']: c['instanceId'] for c in all_caps} == SOURCE_IDS, 'source_capabilities')
@@ -208,7 +217,7 @@ def make(snapshot, metadata, files, ledger, implementation):
         config = decode(before_config)
         need(value['process']['binary'] == OLD_ROOT + '/bin/' + r.SPECS[role][5] and
              value['process']['uid'] == r.SPECS[role][2] and HEX.fullmatch(value['process']['binarySHA256']), 'baseline_process')
-        if TRANSITION == 'rc3-to-rc6':
+        if TRANSITION in ('rc3-to-rc6', 'rc6-to-rc7'):
             need(value['process']['binarySHA256'] == TRANSITIONS[TRANSITION]['oldBinaries']['bin/' + r.SPECS[role][5]], 'rc3_binary_digest')
         need(value['process']['pid'].isdigit() and value['process']['startedMonotonic'].isdigit() and UUID.fullmatch(value['process']['bootId']), 'process_generation')
         after_config, after_unit = transform_config(role, before_config), transform_unit(role, before_unit)

@@ -9,6 +9,46 @@ freeze and other synthetic workload tests to finish before taking a live snapsho
 No release publication, production deployment, schema migration, source restart,
 feed recovery, or identity-policy change is part of this operation.
 
+## RC7 transition after completed RC6 acceptance
+
+The fixed `rc6-to-rc7` profile uses the exact hosted artifact from passing
+candidate CI37229091125. All58 archive files,57 internal checksums, both executable
+hashes, bundled docs and the18-migration ledger were verified against committed
+source. Missing pins still refuse before reading Lab inputs or calling a guest.
+There is no arbitrary-hash/version CLI override.
+
+| Input | SHA256 |
+| --- | --- |
+| `jobman-dashboard_v0.1.0-rc.7_linux_arm64.tar.gz` | `19b3ded0315e4781f07f3885fdca360371c0ac0d28f19abf9a6c53d0ad7e9956` |
+| `bin/jobman-dashboard` | `24ce928be7a9bf0cc69f650039b5faf7af3a814fd5707ba06395760980c116c0` |
+| `bin/jobman-log-broker` | `ec6f819c33592bcff4e22d39aef428c7ff03f7f63204b158e9f559ab26eec35c` |
+
+The exact transition is `633b5e3fdc08cc973e9f318faefccc298c713295` to
+`d10fb5f813efa3599a0bc5f79b3ca88826210510` (`v0.1.0-rc.7`). The predecessor hashes
+are the reviewed RC6 Dashboard `55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7`
+and broker `1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8`.
+The source delta is foreground/interval refresh for web Reports, Alerts and
+Inbox, plus acceptance documentation and curated runbooks. Go/native source and
+all18 migrations are unchanged; binaries still receive the new build revision,
+so their hashes must come from the actual RC7 artifact, never be inferred.
+
+This profile reuses the RC6 preservation and
+bounded phase machinery below: configuration8/schema18, two independent
+Control636 instances with bounded run catalog, original epoch1/scopes12+7,
+released hold with exact current generation/cutoff, rotated API key and all
+three recovery drafts. Only the three units' release paths (including
+ExecStartPre/ExecStart and API/worker WorkingDirectory) and API webRoot change.
+Take a fresh snapshot of the actual current process identities; successful RC6
+acceptance is not a substitute for current preflight/CAS.
+
+Use `--transition rc6-to-rc7` on every command after independent source and
+concrete-plan review. Separate
+`operation-rc6-to-rc7` guest and `.candidate-upgrade.rc6-to-rc7.operation.json`
+host receipts use the existing shared locks and retain all legacy operation
+markers. No migrations, Control restart, scope/key/hold changes, automatic retry,
+rollback, publication or production action is added. All earlier profiles and
+the omitted-option default retain their existing behavior.
+
 ## RC6 transition after authentication rotation
 
 The candidate source is frozen at `633b5e3fdc08cc973e9f318faefccc298c713295`.

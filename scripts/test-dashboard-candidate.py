@@ -197,6 +197,8 @@ class CandidateRC3(unittest.TestCase):
 
 
 class CandidateRC6(unittest.TestCase):
+    transition = 'rc3-to-rc6'
+    predecessor = '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2'
     def setUp(self):
         self.addCleanup(select_all, p.DEFAULT_TRANSITION)
         files = {'bin/jobman-dashboard': b'synthetic-candidate-dashboard',
@@ -205,11 +207,11 @@ class CandidateRC6(unittest.TestCase):
         # Synthetic fixtures patch only local module dictionaries.
         # The separate subprocess checks the exact reviewed source pins.
         for module in (p, g.p, h.p):
-            change = patch.dict(module.TRANSITIONS['rc3-to-rc6'],
+            change = patch.dict(module.TRANSITIONS[self.transition],
                 {'new': 'f'*40, 'archive': 'e'*64, 'binaries': {n: p.sha(v) for n,v in files.items()}})
             change.start(); self.addCleanup(change.stop)
         prior = rc3_fixture(); old_root = p.OLD_ROOT
-        select_all('rc3-to-rc6')
+        select_all(self.transition)
         snapshot = copy.deepcopy(prior['snapshot']); snapshot['transition'] = p.TRANSITION
         # A later completed restore/hold generation is recorded, not reset to5.
         snapshot['hosts']['pg01']['database']['hold'] = {'held': False, 'generation': '9', 'suppressRecordedThrough': '2026-10-04 01:02:03+00'}
@@ -236,11 +238,11 @@ class CandidateRC6(unittest.TestCase):
 
     def test_rotated_profile_preserves_only_expected_configuration_delta(self):
         p.validate(self.plan)
-        self.assertEqual(p.OLD, '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2')
+        self.assertEqual(p.OLD, self.predecessor)
         self.assertEqual(p.RECOVERIES,(p.LEGACY_RECOVERY,p.SCALE_RECOVERY,p.AUTH_RECOVERY))
         self.assertEqual(p.RECOVERY,p.AUTH_RECOVERY)
-        self.assertEqual(p.OPERATION_NAME,'operation-rc3-to-rc6')
-        self.assertEqual(p.HOST_OPERATION_NAME,'.candidate-upgrade.rc3-to-rc6.operation.json')
+        self.assertEqual(p.OPERATION_NAME,'operation-'+self.transition)
+        self.assertEqual(p.HOST_OPERATION_NAME,'.candidate-upgrade.'+self.transition+'.operation.json')
         for role in p.ROLES:
             before=p.unb64(self.snapshot['hosts'][p.r.SPECS[role][0]]['roles'][role]['config'])
             after=p.unb64(self.plan['changes'][role]['afterConfig'])
@@ -338,6 +340,48 @@ class CandidateRC6(unittest.TestCase):
         with patch.object(g,'directory'),patch.object(g.r,'read',side_effect=fake_read) as read:
             with self.assertRaisesRegex(ValueError,'rotated_recovery_authentication'):g.operator_proofs()
         self.assertEqual(read.call_count,4)
+
+
+class CandidateRC7(CandidateRC6):
+    transition = 'rc6-to-rc7'
+    predecessor = '633b5e3fdc08cc973e9f318faefccc298c713295'
+
+    def test_source_profile_has_only_exact_reviewed_pins(self):
+        # A fresh process validates actual pins, independently of fixture patches.
+        code = "import importlib.util,json;from pathlib import Path;spec=importlib.util.spec_from_file_location('p',Path('dashboard-candidate-plan.py'));p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p);print(json.dumps(p.TRANSITIONS['rc6-to-rc7']))"
+        result = subprocess.run([sys.executable,'-c',code],cwd=HERE,capture_output=True,timeout=5,check=True)
+        profile = json.loads(result.stdout)
+        self.assertEqual(profile['old'], self.predecessor)
+        self.assertEqual(profile['new'],'d10fb5f813efa3599a0bc5f79b3ca88826210510')
+        self.assertEqual(profile['version'],'v0.1.0-rc.7'); self.assertEqual(profile['revision'],8)
+        self.assertEqual(profile['archive'],'19b3ded0315e4781f07f3885fdca360371c0ac0d28f19abf9a6c53d0ad7e9956')
+        self.assertEqual(profile['binaries'],{
+            'bin/jobman-dashboard':'24ce928be7a9bf0cc69f650039b5faf7af3a814fd5707ba06395760980c116c0',
+            'bin/jobman-log-broker':'ec6f819c33592bcff4e22d39aef428c7ff03f7f63204b158e9f559ab26eec35c'})
+        self.assertEqual(profile['oldBinaries'],{
+            'bin/jobman-dashboard':'55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7',
+            'bin/jobman-log-broker':'1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8'})
+        # Select is the CLI's first action. A missing archive cannot reach SSH,
+        # and a syntactically valid placeholder archive still needs both pins.
+        for change, expected in [({'archive':None},'candidate_profile_not_pinned'),
+                                 ({'binaries':{}},'candidate_binary_pins_missing')]:
+            with patch.dict(h.p.TRANSITIONS[self.transition],change), patch.object(h,'remote') as remote, patch.object(h,'implementation') as impl, patch.object(sys,'argv',['upgrade','snapshot','--transition',self.transition]):
+                from contextlib import redirect_stdout
+                import io
+                out=io.StringIO()
+                with redirect_stdout(out): self.assertEqual(h.main(),1)
+                self.assertEqual(json.loads(out.getvalue()),{'ok':False,'code':expected})
+                remote.assert_not_called(); impl.assert_not_called()
+
+    def test_rc7_uses_distinct_receipts_without_changing_legacy_profiles(self):
+        self.assertEqual(p.OPERATION_NAME,'operation-rc6-to-rc7')
+        self.assertEqual(p.HOST_OPERATION_NAME,'.candidate-upgrade.rc6-to-rc7.operation.json')
+        expected={'rc1-to-rc2':('operation','.candidate-upgrade.operation.json'),
+                  'rc2-to-rc3':('operation-rc2-to-rc3','.candidate-upgrade.rc2-to-rc3.operation.json'),
+                  'rc3-to-rc6':('operation-rc3-to-rc6','.candidate-upgrade.rc3-to-rc6.operation.json')}
+        for name, markers in expected.items():
+            select_all(name); self.assertEqual((p.OPERATION_NAME,p.HOST_OPERATION_NAME),markers)
+        select_all(self.transition)
 
 
 class Candidate(unittest.TestCase):
