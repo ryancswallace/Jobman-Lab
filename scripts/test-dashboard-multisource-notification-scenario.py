@@ -56,6 +56,19 @@ class TwoSourceNotificationTests(unittest.TestCase):
    self.assertIn("n.state='pending'",dashboard);self.assertIn("s.status='active'",dashboard)
    self.assertNotIn('s.recovery_epoch',dashboard);self.assertNotIn('s.control_instance_id',dashboard)
 
+ def test_process_requires_only_exact_upgraded_source_for_both_profiles(self):
+  expected='7faac82263dfa281d2fec7c3e8a52a55a121294e39e7e2d1706115751d4a2123'
+  prior='38d5d71cadfbde8147d95ca89aa65a5c8783d983c0b5011055d9b08a0e927e7e'
+  self.assertEqual(h.SOURCE_SHA,expected)
+  for profile in c.PROFILES:
+   executable='/fixed-reviewed/control';start='100 (control) '+' '.join(['S']+['0']*18+['77'])
+   with patch.object(c,'run',side_effect=[b'',b'100\n']),patch.object(Path,'stat',return_value=types.SimpleNamespace(st_uid=c.PROFILES[profile]['uid'])),patch.object(g.os,'readlink',return_value=executable),patch.object(c,'read',return_value=b'fixed-upgraded-binary') as read,patch.object(c,'sha',return_value=expected),patch.object(Path,'read_text',return_value=start):
+    self.assertEqual(g.process(c,profile),('100','77',executable));read.assert_called_once_with(Path(executable),128<<20,uid=0,mode=0o755)
+   for rejected in (prior,'0'*64):
+    with self.subTest(profile=profile,hash=rejected),patch.object(c,'run',side_effect=[b'',b'100\n']),patch.object(Path,'stat',return_value=types.SimpleNamespace(st_uid=c.PROFILES[profile]['uid'])),patch.object(g.os,'readlink',return_value=executable),patch.object(c,'read',return_value=b'wrong-binary'),patch.object(c,'sha',return_value=rejected),patch.object(Path,'read_text') as stat_text:
+     with self.assertRaisesRegex(c.Failure,'source_binary'):g.process(c,profile)
+     stat_text.assert_not_called()
+
  def test_guest_host_and_root_guard_precede_mutation(self):
   payload={'profile':'primary','action':'prepare','receipt':'a'*32,'case':None}
   with patch.object(g.os,'geteuid',return_value=1),patch.object(g,'process') as process:

@@ -19,7 +19,7 @@ import sys
 
 COMMON_SHA = 'deb95b8dc32334cddcbcb2f7c1d24584d43de699212f26661c24499339b8cecb'
 NAMESPACES = {'primary':'4156b832-9be8-40ff-a471-cb3061b6001d', 'secondary':'455525f6-5d8a-4d4f-bea3-2d3f1ed4698f'}
-SOURCE_SHA = '38d5d71cadfbde8147d95ca89aa65a5c8783d983c0b5011055d9b08a0e927e7e'
+SOURCE_SHA = '7faac82263dfa281d2fec7c3e8a52a55a121294e39e7e2d1706115751d4a2123'
 RECEIPT = re.compile('[0-9a-f]{32}\\Z')
 
 
