@@ -32,7 +32,7 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-input ansible==14.3.1
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes shellcheck acl
 
       - name: Set up Packer
         uses: hashicorp/setup-packer@c4e4b2636b98ce7566f9ec9c309e26821f695bd2
@@ -40,4 +40,6 @@ jobs:
           version: "1.16.0"
 
       - name: Run static validation
+        env:
+          JOBMAN_TEST_POSIX_ACL: "1"
         run: ./scripts/ci-check.sh

@@ -1,0 +1,113 @@
+---
+- name: Require an already running initialized PostgreSQL container
+  ansible.builtin.command: podman exec jobman-postgres pg_isready -U jobman_control -d jobman_control
+  changed_when: false
+
+- name: Validate synthetic password shape before SQL rendering
+  ansible.builtin.assert:
+    that:
+      - lab_dashboard_password is match('^[0-9a-f]{64}$')
+      - lab_dashboard_ddl_password is match('^[0-9a-f]{64}$')
+      - lab_dashboard_control_password is match('^[0-9a-f]{64}$')
+  no_log: true
+
+- name: Create root-private certificate staging directory
+  ansible.builtin.file:
+    path: /etc/jobman-lab/dashboard-postgres
+    state: directory
+    mode: "0700"
+
+- name: Stage PostgreSQL certificate and key
+  ansible.builtin.copy:
+    src: "{{ lab_root }}/.lab/certs/{{ item.source }}"
+    dest: "/etc/jobman-lab/dashboard-postgres/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - {source: pg01.lab.test.crt, dest: server.crt}
+    - {source: pg01.lab.test.key, dest: server.key}
+    - {source: lab-ca.crt, dest: ca.crt}
+  no_log: true
+
+- name: Create PostgreSQL-owned TLS directory in the existing persistent volume
+  ansible.builtin.command: podman exec --user root jobman-postgres install -d -m 0700 -o postgres -g postgres /var/lib/postgresql/data/dashboard-tls
+  changed_when: false
+
+- name: Install TLS files in the existing container volume
+  ansible.builtin.command:
+    argv: [podman, cp, "/etc/jobman-lab/dashboard-postgres/{{ item }}", "jobman-postgres:/var/lib/postgresql/data/dashboard-tls/{{ item }}"]
+  loop: [server.crt, server.key, ca.crt]
+  changed_when: false
+  no_log: true
+
+- name: Restrict the PostgreSQL TLS files
+  ansible.builtin.command: podman exec --user root jobman-postgres chown -R postgres:postgres /var/lib/postgresql/data/dashboard-tls
+  changed_when: false
+
+- name: Preserve the original HBA file once for operator rollback
+  ansible.builtin.command: podman exec jobman-postgres sh -c 'test -e "$PGDATA/pg_hba.conf.pre-dashboard" || cp -p "$PGDATA/pg_hba.conf" "$PGDATA/pg_hba.conf.pre-dashboard"'
+  changed_when: false
+
+- name: Read current HBA without changing existing Control rules
+  ansible.builtin.command: podman exec jobman-postgres cat /var/lib/postgresql/data/pg_hba.conf
+  register: dashboard_current_hba
+  changed_when: false
+  no_log: true
+
+- name: Stage the current HBA for an additive policy block
+  ansible.builtin.copy:
+    content: "{{ dashboard_current_hba.stdout }}\n"
+    dest: /etc/jobman-lab/dashboard-postgres/pg_hba.conf
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Require TLS and restrict dedicated Dashboard identities to their database
+  ansible.builtin.blockinfile:
+    path: /etc/jobman-lab/dashboard-postgres/pg_hba.conf
+    insertbefore: BOF
+    marker: "# {mark} JOBMAN DASHBOARD ISOLATED LAB"
+    block: |
+      local all jobman_dashboard,jobman_dashboard_ddl,jobman_dashboard_control reject
+      hostnossl all jobman_dashboard,jobman_dashboard_ddl,jobman_dashboard_control 0.0.0.0/0 reject
+      hostnossl all jobman_dashboard,jobman_dashboard_ddl,jobman_dashboard_control ::0/0 reject
+      hostssl jobman_dashboard jobman_dashboard,jobman_dashboard_ddl 10.77.0.0/24 scram-sha-256
+      hostssl jobman_dashboard jobman_dashboard,jobman_dashboard_ddl 127.0.0.1/32 scram-sha-256
+      hostssl jobman_dashboard_control jobman_dashboard_control 10.77.0.0/24 scram-sha-256
+      hostssl jobman_dashboard_control jobman_dashboard_control 127.0.0.1/32 scram-sha-256
+      host all jobman_dashboard,jobman_dashboard_ddl,jobman_dashboard_control 0.0.0.0/0 reject
+      host all jobman_dashboard,jobman_dashboard_ddl,jobman_dashboard_control ::0/0 reject
+
+- name: Install the additive HBA policy in the existing PostgreSQL volume
+  ansible.builtin.command: podman cp /etc/jobman-lab/dashboard-postgres/pg_hba.conf jobman-postgres:/var/lib/postgresql/data/pg_hba.conf
+  changed_when: false
+
+- name: Retain PostgreSQL ownership of its HBA policy
+  ansible.builtin.command: podman exec --user root jobman-postgres chown postgres:postgres /var/lib/postgresql/data/pg_hba.conf
+  changed_when: false
+
+- name: Enable PostgreSQL TLS and reload configuration without restarting existing connections
+  ansible.builtin.command:
+    argv: [podman, exec, -i, jobman-postgres, psql, -X, -v, ON_ERROR_STOP=1, -U, jobman_control, -d, postgres]
+    stdin: |
+      ALTER SYSTEM SET ssl_cert_file = 'dashboard-tls/server.crt';
+      ALTER SYSTEM SET ssl_key_file = 'dashboard-tls/server.key';
+      ALTER SYSTEM SET ssl = 'on';
+      SELECT pg_reload_conf();
+  changed_when: false
+
+- name: Create or reconcile dedicated least-privilege Dashboard database identities
+  ansible.builtin.command:
+    argv: [podman, exec, -i, jobman-postgres, psql, -X, -v, ON_ERROR_STOP=1, -U, jobman_control, -d, postgres]
+    stdin: "{{ lookup('ansible.builtin.template', 'dashboard.sql.j2') }}"
+  no_log: true
+  changed_when: false
+
+- name: Confirm TLS configuration and HBA syntax
+  ansible.builtin.command:
+    argv: [podman, exec, jobman-postgres, psql, -X, -v, ON_ERROR_STOP=1, -U, jobman_control, -d, postgres, -Atc, "SELECT current_setting('ssl')='on' AND NOT EXISTS (SELECT FROM pg_hba_file_rules WHERE error IS NOT NULL)"]
+  register: dashboard_pg_valid
+  changed_when: false
+  failed_when: dashboard_pg_valid.stdout | trim != 't'

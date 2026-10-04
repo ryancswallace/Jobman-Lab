@@ -1,0 +1,45 @@
+SELECT 'CREATE ROLE jobman_dashboard_ddl LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION'
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='jobman_dashboard_ddl') \gexec
+SELECT 'CREATE ROLE jobman_dashboard LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION'
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='jobman_dashboard') \gexec
+SET password_encryption = 'scram-sha-256';
+ALTER ROLE jobman_dashboard_ddl WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION CONNECTION LIMIT 4 PASSWORD '{{ lab_dashboard_ddl_password }}';
+ALTER ROLE jobman_dashboard WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION CONNECTION LIMIT 32 PASSWORD '{{ lab_dashboard_password }}';
+REVOKE jobman_dashboard_ddl FROM jobman_dashboard;
+SELECT 'CREATE DATABASE jobman_dashboard OWNER jobman_dashboard_ddl'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='jobman_dashboard') \gexec
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_database d JOIN pg_roles r ON d.datdba=r.oid WHERE d.datname='jobman_dashboard' AND r.rolname='jobman_dashboard_ddl') THEN
+    RAISE EXCEPTION 'Refusing to change ownership of an existing unexpected Dashboard database';
+  END IF;
+END $$;
+REVOKE ALL ON DATABASE jobman_dashboard FROM PUBLIC;
+GRANT CONNECT ON DATABASE jobman_dashboard TO jobman_dashboard;
+\connect jobman_dashboard
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+ALTER SCHEMA public OWNER TO jobman_dashboard_ddl;
+GRANT USAGE ON SCHEMA public TO jobman_dashboard;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO jobman_dashboard;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO jobman_dashboard;
+SELECT 'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.dashboard_schema_migrations FROM jobman_dashboard'
+WHERE to_regclass('public.dashboard_schema_migrations') IS NOT NULL \gexec
+SELECT 'GRANT SELECT ON public.dashboard_schema_migrations TO jobman_dashboard'
+WHERE to_regclass('public.dashboard_schema_migrations') IS NOT NULL \gexec
+-- No runtime CREATE or default future-table grants. Reapply after each migration.
+
+-- This owner is only for the disposable Control fixture, never the original Control DB.
+\connect postgres
+SELECT 'CREATE ROLE jobman_dashboard_control LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION'
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='jobman_dashboard_control') \gexec
+ALTER ROLE jobman_dashboard_control WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION CONNECTION LIMIT 16 PASSWORD '{{ lab_dashboard_control_password }}';
+SELECT 'CREATE DATABASE jobman_dashboard_control OWNER jobman_dashboard_control'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='jobman_dashboard_control') \gexec
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_database d JOIN pg_roles r ON d.datdba=r.oid WHERE d.datname='jobman_dashboard_control' AND r.rolname='jobman_dashboard_control') THEN
+    RAISE EXCEPTION 'Refusing to change ownership of an unexpected Control fixture database';
+  END IF;
+END $$;
+REVOKE ALL ON DATABASE jobman_dashboard_control FROM PUBLIC;
+\connect jobman_dashboard_control
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+ALTER SCHEMA public OWNER TO jobman_dashboard_control;

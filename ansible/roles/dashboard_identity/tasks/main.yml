@@ -1,0 +1,57 @@
+---
+- name: Create a private fixture configuration directory
+  ansible.builtin.file:
+    path: /etc/jobman-dashboard-lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install private isolated Control fixture database URL
+  ansible.builtin.copy:
+    content: "postgres://jobman_dashboard_control:{{ lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_CONTROL_PASSWORD', type='properties', file=lab_dashboard_credentials) }}@10.77.0.20:5432/jobman_dashboard_control?sslmode=verify-full&sslrootcert=/etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt\n"
+    dest: /etc/jobman-dashboard-lab/control-database-url
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install private synthetic Dashboard identity input
+  ansible.builtin.copy:
+    content: "{{ {'webSecret': lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_WEB_SECRET', type='properties', file=lab_dashboard_credentials), 'alicePassword': lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_ALICE_PASSWORD', type='properties', file=lab_dashboard_credentials), 'bobPassword': lookup('ansible.builtin.ini', 'JOBMAN_LAB_DASHBOARD_BOB_PASSWORD', type='properties', file=lab_dashboard_credentials)} | to_nice_json }}\n"
+    dest: /etc/jobman-dashboard-lab/identity-input.json
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Create the isolated fixture helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/jobman-dashboard-lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the scoped identity helper
+  ansible.builtin.copy:
+    src: configure-identity.py
+    dest: /usr/local/libexec/jobman-dashboard-lab/configure-identity.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reconcile only marked Dashboard Lab clients and immutable synthetic identities
+  ansible.builtin.command: python3 /usr/local/libexec/jobman-dashboard-lab/configure-identity.py
+  changed_when: false
+  no_log: true
+
+- name: Verify isolated Dashboard client policy and signed-claim configuration
+  ansible.builtin.command: python3 /usr/local/libexec/jobman-dashboard-lab/configure-identity.py --check
+  changed_when: false
+
+- name: Fetch public identity mapping for Dashboard and Control fixture configuration
+  ansible.builtin.fetch:
+    src: /etc/jobman-dashboard-lab/oidc-public.json
+    dest: "{{ lab_root }}/.lab/dashboard/oidc-public.json"
+    flat: true

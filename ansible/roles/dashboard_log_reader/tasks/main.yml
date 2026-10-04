@@ -1,0 +1,36 @@
+---
+- name: Create the dedicated log-reader group
+  ansible.builtin.group:
+    name: jobman-dashboard-log
+    gid: 21901
+    state: present
+
+- name: Create the matching non-login log-reader account
+  ansible.builtin.user:
+    name: jobman-dashboard-log
+    uid: 21901
+    group: jobman-dashboard-log
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+    state: present
+
+- name: Install POSIX ACL utilities on the storage server
+  ansible.builtin.dnf:
+    name: acl
+    state: present
+  when: inventory_hostname == 'storage01'
+
+- name: Install explicit canonical-log ACL provisioning helper
+  ansible.builtin.copy:
+    src: provision-acls.py
+    dest: /usr/local/sbin/jobman-dashboard-provision-acls
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == 'storage01'
+
+- name: Provision only published log chunks and required path traversal
+  ansible.builtin.command: python3 /usr/local/sbin/jobman-dashboard-provision-acls
+  changed_when: false
+  when: inventory_hostname == 'storage01'
