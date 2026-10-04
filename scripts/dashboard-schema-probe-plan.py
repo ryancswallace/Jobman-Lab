@@ -64,14 +64,34 @@ def configs(install,selected):
               'deployments':[{'id':c['id']} for c in api['controls']]}
     return {'api':api,'worker':worker,'operator':operator}
 
+def validate_install_complete(install,complete,continuation_sha256=None):
+    base={'operationId':install['operationId'],'complete':True,'retained':True}
+    if continuation_sha256 is None:
+        need(encoded(complete)==encoded(base),'closed_install_required')
+        return
+    need(isinstance(continuation_sha256,str) and HEX.fullmatch(continuation_sha256),
+         'continuation_review_hash')
+    need(isinstance(complete,dict) and set(complete)==set(base)|{'continuation'} and
+         encoded({k:complete[k] for k in base})==encoded(base),'closed_install_required')
+    proof=complete['continuation']
+    fields={'adapterSHA256','originalImplementationSHA256','failureSHA256','diagnosticSHA256','mapperDifference'}
+    need(isinstance(proof,dict) and set(proof)==fields and
+         all(isinstance(proof[k],str) and HEX.fullmatch(proof[k]) for k in fields-{'mapperDifference'}),
+         'continuation_provenance_shape')
+    need(proof['originalImplementationSHA256']==sha(encoded(install['implementationSHA256'])) and
+         proof['mapperDifference']=={'name':'dashboard-api-audience','config':{'userinfo.token.claim':'false'}} and
+         sha(encoded(proof))==continuation_sha256,'continuation_provenance_changed')
+
 def validate(plan):
-    need(set(plan)=={'format','synthetic','operationId','createdAt','install','installComplete','selected','snapshot',
+    need(set(plan)-{'installContinuationSHA256'}=={'format','synthetic','operationId','createdAt','install','installComplete','selected','snapshot',
                     'configs','implementationSHA256','secretSHA256','grantSHA256'},'plan_shape')
     need(plan['format']==1 and plan['synthetic'] is True and UUID.fullmatch(plan['operationId']) and
          type(plan['createdAt']) is int and plan['createdAt']>0,'plan_identity')
     install=plan['install']; selected=plan['selected']
-    need(selected in ('baseline','upgrade') and plan['installComplete']==
-         {'operationId':install['operationId'],'complete':True,'retained':True},'completed_install_required')
+    need(selected in ('baseline','upgrade'),'selected_candidate')
+    if 'installContinuationSHA256' in plan:
+        need(plan['installContinuationSHA256'] is not None,'continuation_review_hash')
+    validate_install_complete(install,plan['installComplete'],plan.get('installContinuationSHA256'))
     need(set(plan['implementationSHA256'])==set(FILES+INSTALL_FILES) and
          all(isinstance(v,str) and HEX.fullmatch(v) for v in plan['implementationSHA256'].values()),'implementation_hashes')
     need(all(plan['implementationSHA256'][k]==v for k,v in install['implementationSHA256'].items()),'install_archive_changed')

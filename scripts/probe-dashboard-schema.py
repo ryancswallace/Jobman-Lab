@@ -56,8 +56,8 @@ def installation(args):
     raw=read(args.install_staging/'plan.json');complete=read(args.install_staging/'complete.json')
     p.need(p.sha(raw)==args.expected_install_plan_sha256 and p.sha(complete)==args.expected_install_complete_sha256,'reviewed_install_required')
     value=p.decode(raw);done=p.decode(complete)
-    p.need(done=={'operationId':value['operationId'],'complete':True,'retained':True} and
-           set(value['implementationSHA256'])==set(p.INSTALL_FILES),'closed_install_required')
+    p.validate_install_complete(value,done,getattr(args,'expected_install_continuation_sha256',None))
+    p.need(set(value['implementationSHA256'])==set(p.INSTALL_FILES),'closed_install_required')
     sources={name:read(args.install_driver/name,256<<10,False).decode() for name in p.INSTALL_FILES}
     p.need({k:p.sha(v.encode()) for k,v in sources.items()}==value['implementationSHA256'],'install_archive_changed')
     # Validate every dependency before importing any reviewed implementation.
@@ -123,7 +123,9 @@ def prepare(args,i,install,complete,sources):
     plan=p.validate({'format':1,'synthetic':True,'operationId':str(uuid.uuid4()),'createdAt':int(time.time()),
          'install':install,'installComplete':complete,'selected':args.selected,'snapshot':p.decode(read(args.staging/'snapshot.json')),
          'configs':p.configs(install,args.selected),'implementationSHA256':{k:p.sha(v.encode()) for k,v in sources.items()},
-         'secretSHA256':{r:p.sha(v) for r,v in keys.items()},'grantSHA256':{r:p.sha(v) for r,v in grants.items()}})
+         'secretSHA256':{r:p.sha(v) for r,v in keys.items()},'grantSHA256':{r:p.sha(v) for r,v in grants.items()},
+         **({'installContinuationSHA256':args.expected_install_continuation_sha256}
+            if getattr(args,'expected_install_continuation_sha256',None) is not None else {})})
     save(args.staging/'plan.json',plan)
     save(args.staging/'secrets.json',{r:base64.b64encode(v).decode() for r,v in keys.items()})
     save(args.staging/'grants.json',{r:base64.b64encode(v).decode() for r,v in grants.items()})
@@ -140,6 +142,7 @@ def receipt(args,plan,phase):
 def run_phase(args,i,install,sources):
     raw=read(args.staging/'plan.json');plan=p.validate(p.decode(raw))
     p.need(p.sha(raw)==args.expected_plan_sha256 and plan['install']==install and
+           plan.get('installContinuationSHA256')==getattr(args,'expected_install_continuation_sha256',None) and
            p.sha(p.encoded(plan['implementationSHA256']))==args.expected_implementation_sha256 and
            {k:p.sha(v.encode()) for k,v in sources.items()}==plan['implementationSHA256'],'reviewed_probe_required')
     for host in i.h.HOSTS:current(args,i,sources,plan,'preserved',host)
@@ -182,6 +185,7 @@ def main():
     for name in ('lab-root','install-driver','install-staging','staging'):parser.add_argument('--'+name,type=Path,required=True)
     for name in ('expected-install-plan-sha256','expected-install-complete-sha256'):parser.add_argument('--'+name,required=True)
     for name in ('expected-plan-sha256','expected-implementation-sha256'):parser.add_argument('--'+name)
+    parser.add_argument('--expected-install-continuation-sha256')
     parser.add_argument('--selected',choices=('baseline','upgrade'));parser.add_argument('--candidate-archive',type=Path)
     parser.add_argument('--observed-phase',choices=tuple(p.PHASES));parser.add_argument('--apply',action='store_true')
     args=parser.parse_args();os.umask(0o077)

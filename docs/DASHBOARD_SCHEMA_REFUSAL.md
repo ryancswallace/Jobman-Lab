@@ -26,6 +26,18 @@ selected candidate archive must be retained. This probe validates each original
 implementation hash before importing it. Pass its frozen `scripts` directory,
 not the potentially newer working checkout.
 
+A completion produced by an independently reviewed installation continuation
+requires the additional `--expected-install-continuation-sha256` input on every
+probe invocation. This is the SHA256 of the canonical encoded `continuation`
+object in the retained completion receipt, including its newline. The probe
+retains the complete receipt and this review digest in its plan. It requires
+exact adapter, original-implementation, failure and diagnostic hashes, with
+only the reviewed explicit false audience-mapper difference. The original
+implementation digest must match the unchanged nine-file installation archive.
+Extra or changed provenance fields, an omitted review digest, or a changed
+operation fail closed. Ordinary completions keep the existing path with no
+continuation option. This does not rerun identity adoption or retirement.
+
 No source or broker request is needed. The worker configuration is retention-only,
 with no source, broker, APNs or application-key credentials. The API configuration
 retains its local file references, removes reports and remote logs, and points

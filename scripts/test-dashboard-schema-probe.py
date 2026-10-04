@@ -61,6 +61,66 @@ class SchemaProbeTests(unittest.TestCase):
             plan=fixture();change(plan)
             with self.assertRaises(ValueError):p.validate(plan)
 
+    def continued(self,plan):
+        proof={'adapterSHA256':'1'*64,'originalImplementationSHA256':p.sha(p.encoded(plan['install']['implementationSHA256'])),
+               'failureSHA256':'2'*64,'diagnosticSHA256':'3'*64,
+               'mapperDifference':{'name':'dashboard-api-audience','config':{'userinfo.token.claim':'false'}}}
+        plan['installComplete']['continuation']=proof
+        plan['installContinuationSHA256']=p.sha(p.encoded(proof))
+        return plan
+
+    def test_explicit_reviewed_completion_preserves_legacy_and_provenance(self):
+        self.assertNotIn('installContinuationSHA256',p.validate(fixture()))
+        plan=self.continued(fixture());self.assertIs(p.validate(plan),plan)
+        for edit in (lambda v:v.pop('installContinuationSHA256'),
+                     lambda v:v.update(installContinuationSHA256=None),
+                     lambda v:v['installComplete'].update(extra=True),
+                     lambda v:v['installComplete'].update(complete=1),
+                     lambda v:v['installComplete'].update(operationId='92000000-0000-4000-8000-000000000001'),
+                     lambda v:v['installComplete']['continuation'].update(extra='x'),
+                     lambda v:v['installComplete']['continuation'].update(adapterSHA256='4'*64),
+                     lambda v:v['installComplete']['continuation'].update(failureSHA256='4'*64),
+                     lambda v:v['installComplete']['continuation'].update(diagnosticSHA256='4'*64)):
+            changed=copy.deepcopy(plan);edit(changed)
+            with self.assertRaises(ValueError):p.validate(changed)
+        plain=fixture();plain['installContinuationSHA256']='a'*64
+        with self.assertRaises(ValueError):p.validate(plain)
+
+    def test_review_hash_cannot_rebind_original_archive_or_expand_mapper_exception(self):
+        for edit in (lambda v:v.update(originalImplementationSHA256='4'*64),
+                     lambda v:v['mapperDifference']['config'].update({'userinfo.token.claim':False}),
+                     lambda v:v['mapperDifference']['config'].update({'access.token.claim':'false'}),
+                     lambda v:v['mapperDifference'].update(name='unrelated')):
+            plan=self.continued(fixture());edit(plan['installComplete']['continuation'])
+            plan['installContinuationSHA256']=p.sha(p.encoded(plan['installComplete']['continuation']))
+            with self.assertRaises(ValueError):p.validate(plan)
+
+    def test_actual_host_loader_requires_explicit_continuation_digest(self):
+        plan=fixture();install=plan['install']
+        install['implementationSHA256']={name:p.sha((LAB/'scripts'/name).read_bytes()) for name in p.INSTALL_FILES}
+        self.continued(plan)
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
+            root=Path(tmp);os.chmod(root,0o700)
+            h.save(root/'plan.json',install);h.save(root/'complete.json',plan['installComplete'])
+            args=SimpleNamespace(install_staging=root,install_driver=(LAB/'scripts').resolve(),
+                expected_install_plan_sha256=p.sha(p.encoded(install)),
+                expected_install_complete_sha256=p.sha(p.encoded(plan['installComplete'])))
+            with self.assertRaisesRegex(ValueError,'closed_install_required'):h.installation(args)
+            args.expected_install_continuation_sha256=plan['installContinuationSHA256']
+            _,actual,done,sources=h.installation(args)
+            self.assertEqual(actual,install);self.assertEqual(done,plan['installComplete'])
+            self.assertEqual(set(sources),set(p.FILES+p.INSTALL_FILES))
+            args.expected_install_continuation_sha256='f'*64
+            with self.assertRaisesRegex(ValueError,'continuation_provenance_changed'):h.installation(args)
+
+    def test_phase_cannot_drop_reviewed_continuation_binding(self):
+        plan=self.continued(fixture())
+        args=SimpleNamespace(staging=Path('/unused'),phase='verify',expected_plan_sha256=p.sha(p.encoded(plan)),
+            expected_implementation_sha256=p.sha(p.encoded(plan['implementationSHA256'])))
+        with patch.object(h,'read',return_value=p.encoded(plan)),patch.object(h,'current') as remote:
+            with self.assertRaisesRegex(ValueError,'reviewed_probe_required'):h.run_phase(args,None,plan['install'],{})
+            remote.assert_not_called()
+
     def test_future_is_only_one_unknown_ledger_entry(self):
         self.assertEqual(p.FUTURE['name'],'migrations/999999_lab_schema_probe.sql')
         self.assertRegex(p.FUTURE['sha256'],'^[0-9a-f]{64}$')
