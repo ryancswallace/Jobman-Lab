@@ -135,6 +135,46 @@ def no_other_timers():
     p.need(raw.strip()==b'','another_timer_active')
 
 
+
+def aborted_operation(root):
+    """Validate a reviewed staged-only retirement; never infer acceptance."""
+    private_dir(root)
+    p.need(p.HEX.fullmatch(root.name) is not None,'retirement_operation')
+    names={entry.name for entry in root.iterdir()}
+    p.need(names=={'plan.json','intent.json','staged.json','begin.pending.json','aborted.json'},'retirement_artifacts')
+    raw={name:r.read(root/name,2<<20,owner=(0,0),mode=0o600)[0] for name in names}
+    values={name:p.decode(data) for name,data in raw.items()}
+    old=p.validate(values['plan.json']);operation=old['operationId']
+    p.need(operation==root.name and all(raw[name]==p.encoded(value) for name,value in values.items()),'retirement_original_changed')
+    marker=values['intent.json']
+    p.need(set(marker)=={'scenario','operationId','planSHA256','timerCodeSHA256','originalRestoreSHA256'} and
+           marker['scenario']==p.SCENARIO and marker['operationId']==operation and
+           marker['planSHA256']==p.sha(raw['plan.json']) and p.HEX.fullmatch(marker['timerCodeSHA256']) and
+           marker['originalRestoreSHA256']==old['implementationSHA256']['dashboard-restore-guest.py'],'retirement_intent')
+    p.need(values['staged.json']=={'staged':True,'operationId':operation} and values['staged.json']['staged'] is True,'retirement_stage')
+    tombstone=values['begin.pending.json']
+    p.need(set(tombstone)=={'operationId','planSHA256','outcome','accepted','failureEvidenceSHA256','retirementProofSHA256'} and
+           tombstone['operationId']==operation and tombstone['planSHA256']==p.sha(raw['plan.json']) and
+           tombstone['outcome']=='aborted_before_arm' and tombstone['accepted'] is False and
+           p.HEX.fullmatch(tombstone['failureEvidenceSHA256']) and p.HEX.fullmatch(tombstone['retirementProofSHA256']),'retirement_tombstone')
+    expected={'format':1,'operationId':operation,'outcome':'aborted_before_arm','accepted':False,
+              'originalSHA256':{name:p.sha(raw[name]) for name in ('plan.json','intent.json','staged.json')},
+              'beginTombstoneSHA256':p.sha(raw['begin.pending.json']),
+              'failureEvidenceSHA256':tombstone['failureEvidenceSHA256'],
+              'retirementProofSHA256':tombstone['retirementProofSHA256']}
+    p.need(values['aborted.json']==expected and type(values['aborted.json'].get('format')) is int and
+           values['aborted.json'].get('accepted') is False,'retirement_receipt')
+    return expected
+
+
+def prior_operation_closed(root):
+    private_dir(root)
+    if (root/'aborted.json').exists():
+        return aborted_operation(root)
+    p.need((root/'accepted.json').exists(),'another_watchdog_pending')
+    return None
+
+
 def stage(plan):
     with operation_lock():
         no_other_timers()
@@ -143,7 +183,7 @@ def stage(plan):
         base=Path(p.BASE);entries=list(base.iterdir());p.need(len(entries)<=33,'operation_bound')
         for entry in entries:
             if entry.name=='.operation.lock':continue
-            private_dir(entry);p.need((entry/'accepted.json').exists(),'another_watchdog_pending')
+            prior_operation_closed(entry)
         root=base/plan['operationId'];p.need(not root.exists(),'operation_exists')
         r.directory(root);r.put(root/'plan.json',p.encoded(plan));r.put(root/'intent.json',p.encoded(intent(plan)))
         r.put(root/'staged.json',p.encoded({'staged':True,'operationId':plan['operationId']}))

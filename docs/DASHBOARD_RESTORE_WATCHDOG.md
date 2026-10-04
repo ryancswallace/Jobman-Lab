@@ -149,3 +149,27 @@ failure paths with mocked external boundaries. They cover late-stop refusal,
 real timer-context requirements, lost-response no-replay, partial completion
 without success, changed process/configuration pins, age bounds, quiet SQL and
 host phase restrictions. These tests are not live timer timing evidence.
+
+## Staged-only failed attempts
+
+A staged operation that failed during HTTP setup is not a watchdog acceptance.
+It continues to block new staging until an independently reviewed, fixed-operation
+retirement proves that only its original `plan.json`, `intent.json` and
+`staged.json` exist, that no timer is active and that the current services and
+retained state remain intact. A failed host stage with no guest directory is
+retained as failed evidence; it is never retried to make it appear successful.
+
+The explicit retirement first creates a durable `begin.pending.json` tombstone.
+The original archived begin implementation refuses that file, so even an old
+operator command cannot arm the retired operation. Only after this fence is
+synced does retirement create `aborted.json`, with `accepted:false`, the exact
+three original file hashes, the tombstone hash and the reviewed failure/proof
+hashes. Original receipts are never overwritten and no `accepted.json` is made.
+A lost response or partial retirement remains blocked pending independent
+inspection; the host never repeats the mutation automatically.
+
+Future stage accepts only this exact five-file aborted shape, checking every
+private original file and receipt. Any arm, stop, timer executable, restart,
+acceptance or unknown artifact rejects it. A new operation still needs a fresh
+snapshot, new plan and separate stage/begin review; neither retirement nor new
+stage changes the original 150-second restore timer or its process checks.

@@ -250,6 +250,84 @@ class WatchdogTests(unittest.TestCase):
         plan=fixture();plan['createdAt']=902
         with self.assertRaises(ValueError):p.validate(plan)
 
+    def retired_fixture(self, root):
+        plan=fixture();plan['operationId']=root.name
+        original={'plan.json':p.encoded(plan),'intent.json':p.encoded(w.intent(plan)),
+                  'staged.json':p.encoded({'staged':True,'operationId':root.name})}
+        tombstone={'operationId':root.name,'planSHA256':p.sha(original['plan.json']),
+                   'outcome':'aborted_before_arm','accepted':False,
+                   'failureEvidenceSHA256':'a'*64,'retirementProofSHA256':'b'*64}
+        original['begin.pending.json']=p.encoded(tombstone)
+        receipt={'format':1,'operationId':root.name,'outcome':'aborted_before_arm','accepted':False,
+                 'originalSHA256':{n:p.sha(original[n]) for n in ('plan.json','intent.json','staged.json')},
+                 'beginTombstoneSHA256':p.sha(original['begin.pending.json']),
+                 'failureEvidenceSHA256':'a'*64,'retirementProofSHA256':'b'*64}
+        original['aborted.json']=p.encoded(receipt)
+        for name,raw in original.items():(root/name).write_bytes(raw)
+        return original,receipt
+
+    def test_staged_retirement_is_explicit_not_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/('2'*64);root.mkdir();raw,receipt=self.retired_fixture(root)
+            with patch.object(w,'private_dir'),patch.object(r,'read',side_effect=lambda path,*a,**kw:(path.read_bytes(),None)):
+                self.assertEqual(w.prior_operation_closed(root),receipt)
+                self.assertFalse((root/'accepted.json').exists())
+                for missing in ('aborted.json','begin.pending.json'):
+                    (root/missing).unlink()
+                    with self.assertRaises(ValueError):w.prior_operation_closed(root)
+                    (root/missing).write_bytes(raw[missing])
+                # A plain pending start, or a partial retirement, is never closure.
+                (root/'begin.pending.json').write_bytes(p.encoded({'operationId':root.name,'planSHA256':receipt['originalSHA256']['plan.json']}))
+                with self.assertRaises(ValueError):w.prior_operation_closed(root)
+
+    def test_retirement_denies_any_timer_or_unknown_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/('2'*64);root.mkdir();self.retired_fixture(root)
+            with patch.object(w,'private_dir'),patch.object(r,'read',side_effect=lambda path,*a,**kw:(path.read_bytes(),None)):
+                for name in ('armed.json','stopped.json','fired.json','disarmed.json','watchdog.json','guest.py','accepted.json','unknown'):
+                    (root/name).write_bytes(b'{}')
+                    with self.assertRaisesRegex(ValueError,'retirement_artifacts'):w.aborted_operation(root)
+                    (root/name).unlink()
+
+    def test_retirement_requires_exact_canonical_proofs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/('2'*64);root.mkdir();raw,_=self.retired_fixture(root)
+            changes={'aborted.json':({'accepted':True},{'accepted':0},{'format':True},{'originalSHA256':{}},{'beginTombstoneSHA256':'f'*64},{'unknown':True}),
+                     'begin.pending.json':({'accepted':True},{'operationId':'3'*64},{'outcome':'accepted'},{'retirementProofSHA256':'x'}),
+                     'staged.json':({'staged':False},{'staged':1}),
+                     'intent.json':({'timerCodeSHA256':'x'},{'originalRestoreSHA256':'f'*64}),
+                     'plan.json':({'operationId':'3'*64},)}
+            with patch.object(w,'private_dir'),patch.object(r,'read',side_effect=lambda path,*a,**kw:(path.read_bytes(),None)):
+                for name,variants in changes.items():
+                    for change in variants:
+                        value=p.decode(raw[name]);value.update(change);(root/name).write_bytes(p.encoded(value))
+                        with self.assertRaises(ValueError):w.aborted_operation(root)
+                        (root/name).write_bytes(raw[name])
+                (root/'aborted.json').write_bytes(raw['aborted.json']+b' ')
+                with self.assertRaisesRegex(ValueError,'retirement_original_changed'):w.aborted_operation(root)
+
+    def test_retirement_tombstone_blocks_original_begin_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/('2'*64);root.mkdir();self.retired_fixture(root)
+            with patch.object(w,'operation_lock',return_value=__import__('contextlib').nullcontext()),                 patch.object(w,'no_other_timers'),patch.object(w,'adapter',return_value=root),                 patch.object(w.time,'time',return_value=2),patch.object(r,'arm_backup') as arm,                 patch.object(r,'stop_primary') as stop:
+                with self.assertRaisesRegex(ValueError,'uncertain_begin_no_retry'):w.begin(fixture())
+                arm.assert_not_called();stop.assert_not_called()
+
+    def test_stage_accepts_verified_retirement_but_not_partial_tombstone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);old=base/('2'*64);old.mkdir();raw,_=self.retired_fixture(old)
+            def read(path,*args,**kwargs):return path.read_bytes(),None
+            def put(path,data):
+                with path.open('xb') as stream:stream.write(data)
+            with patch.object(p,'BASE',str(base)),patch.object(w,'private_dir'),                 patch.object(w,'operation_lock',return_value=__import__('contextlib').nullcontext()),                 patch.object(w,'no_other_timers'),patch.object(w.time,'time',return_value=2),                 patch.object(w,'compare'),patch.object(w,'snapshot'),patch.object(r,'read',side_effect=read),                 patch.object(r,'directory',side_effect=lambda path:Path(path).mkdir()),patch.object(r,'put',side_effect=put):
+                (old/'aborted.json').unlink()
+                with self.assertRaises(ValueError):w.stage(fixture())
+                self.assertFalse((base/fixture()['operationId']).exists())
+                (old/'aborted.json').write_bytes(raw['aborted.json'])
+                result=w.stage(fixture());self.assertTrue(result['staged'])
+                self.assertEqual(set(x.name for x in (base/fixture()['operationId']).iterdir()),{'plan.json','intent.json','staged.json'})
+                self.assertEqual({n:(old/n).read_bytes() for n in raw},raw)
+
     def test_other_active_fault_or_restore_timer_prevents_stage(self):
         with patch.object(g,'run',return_value=b'jobman-dashboard-fault-old.timer loaded active waiting\n'),self.assertRaises(ValueError):w.no_other_timers()
         with patch.object(g,'run',return_value=b''):w.no_other_timers()
