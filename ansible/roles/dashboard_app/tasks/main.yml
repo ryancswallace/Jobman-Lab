@@ -71,14 +71,45 @@
   no_log: true
   notify: Restart isolated Dashboard application
 
-- name: Create binary and static application directories
+- name: Create the binary application directory
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     owner: root
     group: root
     mode: "0755"
-  loop: [/usr/local/libexec/jobman-dashboard-lab, /usr/local/share/jobman-dashboard-lab/web]
+  loop: [/usr/local/libexec/jobman-dashboard-lab]
+
+- name: Inspect static directories without following aliases
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /usr/local
+    - /usr/local/share
+    - /usr/local/share/jobman-dashboard-lab
+    - /usr/local/share/jobman-dashboard-lab/web
+  register: dashboard_static_directories
+
+- name: Reject unexpected existing static directory identities
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false))
+      - not item.stat.exists or (not (item.stat.islnk | default(false)))
+      - not item.stat.exists or (item.stat.uid == 0 and item.stat.gid == 0 and item.stat.mode == '0755')
+      - item.item not in ['/usr/local', '/usr/local/share'] or item.stat.exists
+    fail_msg: "Static asset directories must be ordinary root-owned 0755 directories."
+  loop: "{{ dashboard_static_directories.results }}"
+
+- name: Create only absent static application directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ dashboard_static_directories.results }}"
+  when: not item.stat.exists
 
 - name: Install exact verified Dashboard binary and build evidence
   ansible.builtin.copy:
@@ -92,15 +123,55 @@
     - {source: build.json, dest: dashboard-build.json, mode: "0644"}
   notify: Restart isolated Dashboard application
 
-- name: Install compiled web assets
+- name: Install the bounded atomic static-tree installer
   ansible.builtin.copy:
-    src: "{{ dashboard_application_build }}/web/"
-    dest: /usr/local/share/jobman-dashboard-lab/web/
+    src: install-web-assets.py
+    dest: /usr/local/libexec/jobman-dashboard-lab/install-web-assets.py
     owner: root
     group: root
-    mode: "0644"
-    directory_mode: "0755"
-  notify: Restart isolated Dashboard application
+    mode: "0755"
+
+- name: Inspect the initial static entry point without following aliases
+  ansible.builtin.stat:
+    path: /usr/local/share/jobman-dashboard-lab/web/index.html
+    follow: false
+  register: dashboard_web_entry
+
+- name: Bootstrap assets only for an empty inactive first installation
+  when: not ansible_check_mode and not dashboard_web_entry.stat.exists
+  block:
+    - name: Create a private initial asset upload
+      ansible.builtin.tempfile:
+        state: directory
+        path: /usr/local/share/jobman-dashboard-lab
+        prefix: .web-upload-
+      register: dashboard_web_bootstrap_upload
+
+    - name: Copy the verified first-install archive and evidence
+      ansible.builtin.copy:
+        src: "{{ dashboard_application_build }}/{{ item }}"
+        dest: "{{ dashboard_web_bootstrap_upload.path }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: [web.tar.gz, build.json]
+
+    - name: Install the initial tree without starting an uninitialized service
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /usr/local/libexec/jobman-dashboard-lab/install-web-assets.py
+          - "{{ dashboard_web_bootstrap_upload.path }}/web.tar.gz"
+          - "{{ dashboard_web_bootstrap_upload.path }}/build.json"
+          - --bootstrap
+      register: dashboard_web_bootstrap
+      changed_when: dashboard_web_bootstrap.stdout == 'installed'
+  always:
+    - name: Remove only this initial asset upload
+      ansible.builtin.file:
+        path: "{{ dashboard_web_bootstrap_upload.path }}"
+        state: absent
+      when: dashboard_web_bootstrap_upload.path is defined
 
 - name: Install private application TLS identity and persistence credentials
   ansible.builtin.copy:
@@ -179,6 +250,68 @@
     group: root
     mode: "0644"
   notify: Restart isolated Dashboard application
+
+- name: Replace the complete verified web tree
+  when: not ansible_check_mode
+  block:
+    - name: Create a private upload directory outside the served tree
+      ansible.builtin.tempfile:
+        state: directory
+        path: /usr/local/share/jobman-dashboard-lab
+        prefix: .web-upload-
+      register: dashboard_web_upload
+
+    - name: Copy the exact verified archive and its build evidence
+      ansible.builtin.copy:
+        src: "{{ dashboard_application_build }}/{{ item }}"
+        dest: "{{ dashboard_web_upload.path }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: [web.tar.gz, build.json]
+
+    - name: Validate the archive and compare the entire current asset tree
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /usr/local/libexec/jobman-dashboard-lab/install-web-assets.py
+          - "{{ dashboard_web_upload.path }}/web.tar.gz"
+          - "{{ dashboard_web_upload.path }}/build.json"
+          - --check
+      register: dashboard_web_check
+      changed_when: false
+
+    - name: Close the application's retained static-root descriptor before replacement
+      when: dashboard_web_check.stdout == 'different'
+      block:
+        - name: Stop only the isolated application before deleting displaced assets
+          ansible.builtin.systemd_service:
+            name: jobman-dashboard-lab-app
+            daemon_reload: true
+            state: stopped
+
+        - name: Atomically install the complete static tree while the application is stopped
+          ansible.builtin.command:
+            argv:
+              - python3
+              - /usr/local/libexec/jobman-dashboard-lab/install-web-assets.py
+              - "{{ dashboard_web_upload.path }}/web.tar.gz"
+              - "{{ dashboard_web_upload.path }}/build.json"
+          register: dashboard_web_install
+          changed_when: dashboard_web_install.stdout == 'installed'
+      always:
+        - name: Reopen the complete static tree even if asset installation failed
+          ansible.builtin.systemd_service:
+            name: jobman-dashboard-lab-app
+            daemon_reload: true
+            enabled: true
+            state: started
+  always:
+    - name: Remove only this operation's archive upload
+      ansible.builtin.file:
+        path: "{{ dashboard_web_upload.path }}"
+        state: absent
+      when: dashboard_web_upload.path is defined
 
 - name: Start only the isolated Dashboard application
   ansible.builtin.systemd_service:
