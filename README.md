@@ -362,3 +362,342 @@ PYTHONDONTWRITEBYTECODE=1 ./scripts/check-dashboard-producer.py /absolute/path/a
 The test runs as Alice, creates a unique disposable NFS subtree, verifies actual
 content reads without printing bytes, cleans only its own files, and records
 the tested binary SHA-256 in `.lab/dashboard/producer-check.json`.
+
+## Isolated Dashboard runtime fixture
+
+The optional runtime uses only the three already-running infrastructure VMs.
+Prepare it after `configure-dashboard-infra` using an explicitly supplied exact
+Linux ARM64 Control fixture build, then an exact Dashboard/broker/web build:
+
+```sh
+./scripts/configure-dashboard-source.sh /absolute/path/to/control-fixture-build
+./scripts/configure-dashboard-runtime.sh /absolute/path/to/dashboard-build
+./scripts/check-dashboard-runtime.py
+```
+
+Each build directory has `build.json` with its full source revision, platform,
+toolchain and SHA-256 hashes for its executables. The scripts verify those hashes
+before upload. The Dashboard directory also contains the compiled `web.tar.gz` and its digest.
+The wrapper verifies that digest and stages its exact `web/` tree, rejecting
+path traversal, links, special files, duplicate paths and excessive sizes. An
+existing staged tree must match the archive byte-for-byte; it is not overwritten.
+Control's directory contains the ordinary `jobman-control` binary and the
+nonrelease `jobman-control-lab-helper`; both must come from the same exact
+revision. The normal Control API and real directory reconciliation workers run
+unchanged against the isolated `jobman_dashboard_control` database. The helper
+creates a synthetic LDAPS service and admits synthetic data through real Store
+methods; it does not execute Slurm/host jobs or prove corporate AD behavior.
+
+| Process | Guest / endpoint | User |
+| --- | --- | --- |
+| Dashboard HTTPS | storage01, `https://dashboard.lab.test:8443` | `jobman-dashboard-app`, UID21903 |
+| Storage broker | control01, `https://10.77.0.21:19443` | `jobman-dashboard-log`, UID21901 |
+| Synthetic Control | control01, `https://10.77.0.21:18443` | `jobman-dashboard-source`, UID21902 |
+| Synthetic directory | control01, `ldaps://127.0.0.1:18636` | `jobman-dashboard-source`, UID21902 |
+
+Original Control8080 and Keycloak8443 on control01 are preserved. Only the
+Dashboard guest receives the scoped `/etc/hosts` entry for its own hostname;
+the Mac's DNS and trust stores are unchanged. Host checks should use an explicit
+CA and a hostname-preserving `--resolve dashboard.lab.test:8443:10.77.0.10`.
+Existing Lab guest trust already covers the Lab CA. Generated application and
+broker leaf certificates last seven days and are not silently renewed; inspect
+and replace the explicit synthetic credentials before expiry.
+
+The private Control fixture root is `/etc/jobman-dashboard-lab/control-fixture`,
+owned by its service user with mode0700. Preparation is immutable once complete;
+repeating identical inputs is a no-op. A partial preparation needs inspection,
+not a database reset or deletion of credentials. Public actual source,
+namespace, target-generation and job/group IDs are fetched to
+`.lab/dashboard/fixture-info.json`. Only the Dashboard's required Control client
+key/certificate/signing key and public fixture CA are copied into private host
+staging. The Control fixture CA **private** key never leaves its fixture root.
+
+Synthetic log bytes first go to `/var/lib/jobman-dashboard-lab/seed-logs` on
+control01. Alice receives only read/traverse access to that spool; a scoped
+copier exclusively creates its two synthetic namespace trees in
+`/data/jobman/alice` with modes0750/0640. It never uses root to write the
+root-squashed NFS mount, never preserves a local source ACL over the NFS default,
+and rejects changes to existing immutable output. No existing workload target
+or job is launched or modified.
+
+Application material is private under `/etc/jobman-dashboard-app-lab` on
+storage01. Broker material is independently private under
+`/etc/jobman-dashboard-broker-lab` on control01. Dashboard-to-broker mTLS and
+Ed25519 credentials are distinct from either process's Control credentials.
+All TLS roots are explicit. The broker's rollback/identity ledger remains on
+local disk at `/var/lib/jobman-dashboard-broker-lab` with mode0700; do not remove
+it to bypass source restore or rollback checks. Its only log mapping pins the
+fixture's actual target generations, `lab-nfs` version1, and Alice's NFS root.
+
+The runtime playbook applies Dashboard migrations using a temporary root-only
+DDL credential, grants runtime DML on current tables (migration ledger remains
+read-only), and removes the guest DDL credential before starting the app.
+Service users are non-login, have no privileges/capabilities, and use systemd
+read-only system protection; only broker local state is writable. A runtime
+reapply restarts only the corresponding isolated services when their material
+or binary changes. It never changes the original services.
+
+To stop this fixture, stop only `jobman-dashboard-lab-app` on storage01 and
+`jobman-dashboard-lab-broker`, `jobman-dashboard-lab-control`, and
+`jobman-dashboard-lab-directory` on control01. Preserve private material, broker
+ledger and both dedicated databases for inspection/recovery. Starting the
+fixture does not constitute production, APNs, AD FS or managed-iPhone acceptance.
+
+### Opt-in reporting runtime
+
+Keep the initial monitoring deployment unchanged until an exact report-capable
+Dashboard revision has passed independent review and CI. Build its binaries and
+web archive from that clean revision, then explicitly enable reporting:
+
+```sh
+./scripts/configure-dashboard-runtime.sh /absolute/path/to/reviewed-dashboard-build --reports
+./scripts/check-dashboard-runtime.py --reports
+```
+
+The flag adds `reports.objectRoot` and `reports.redactionFile` to the private app
+configuration. Object files live under
+`/var/lib/jobman-dashboard-app-lab/reports`, with mode0700 and service UID21903.
+The service receives filesystem write access to exactly that directory. The
+policy is installed as mode0600 at
+`/etc/jobman-dashboard-app-lab/redaction.json`; its sole bounded literal matches
+known synthetic fixture text so acceptance can prove bytes were redacted without
+modifying original NFS logs. It is not a production redaction policy and contains
+no corporate secrets. Reapply an enabled deployment with `--reports`; the role
+refuses to silently remove that configuration. Stored object pairs are never
+removed by the provisioning workflow.
+
+The existing explicit DDL step applies `000005_report_queue.sql` through the
+separate Dashboard DDL identity, removes its transient guest credential even on
+failure, and grants current-table runtime DML while preserving the read-only
+migration ledger. The readiness flag verifies private storage/policy modes,
+service write path, migration and runtime privileges. Preserve the database,
+private object root and encryption key together when handling recovery.
+
+After deployment, both `metadata` and `include_log_tail` acceptance must use the
+ordinary Control snapshot, broker NFS read, collector, deterministic engine,
+sealed object pair, authorized API and original citation path. Check that the
+synthetic redaction canary is absent from collected bytes and its notice/range
+is disclosed. Existing job/log/target and same-token revocation acceptance must
+remain valid. These checks precede separate browser/native interface acceptance;
+configuration or fixture rendering alone does not prove report delivery.
+
+### Forward-only synthetic Control upgrades
+
+Completed source preparation intentionally does not rerun migrations. After
+reviewing a newer exact Control binary and its forward migration, use the
+explicit upgrade helper instead of rerunning the original fixture bundle:
+
+```sh
+./scripts/upgrade-dashboard-source.py /absolute/path/to/reviewed-control-build \
+  --from-revision <recorded-current-full-revision> \
+  --expected-migration <last-reviewed-migration-filename>
+```
+
+To enable the reviewed shared-diagnostic snapshot source, include
+`--diagnostic-deployment-id 72000000-0000-4000-8000-000000000001` with that upgrade.
+Only this fixture's existing Dashboard registry identity is accepted. The helper
+preserves all existing private environment bytes, rejects a conflicting prior
+pin, and atomically adds the value with the same service owner and mode0600.
+Omitting the flag preserves any existing value. This pin identifies evidence;
+it does not expand service or user permissions.
+
+The supplied `build.json` must identify the Linux ARM64 revision and binary
+SHA-256. Preflight verifies the dedicated TLS-only `jobman_dashboard_control`
+database, unchanged source instance, small synthetic dataset, private source
+environment and absence of a pending directory-recovery receipt. The helper
+stages the verified binary, stops only `jobman-dashboard-lab-control`, runs the
+normal binary once with migration enabled and directory mode `preview`, and
+checks the resulting migration ledger before installing and starting it.
+Preview exits before listeners, directory mutation or delegation registration.
+
+The previous executable is retained with its source revision, and public
+`source-current.json` records the new binary and migration. Initial provisioning
+refuses a different recorded revision to prevent an implicit downgrade. A
+failed transition leaves the isolated source for inspection; it never resets a
+database, reseeds identities, changes source keys, or automatically rolls back
+forward-only migrations. Verify TLS readiness and current directory proofs after
+recovery. The original Control, Keycloak and LDAP units are not restarted by this
+upgrade. The synthetic Control uses an Ed25519 certificate; use the guest's TLS
+client or a supported Go/OpenSSL client if the host's legacy curl cannot
+negotiate that algorithm.
+
+The 2026-10-04 isolated acceptance upgraded Control from
+`4b04d197fd030ea1f440384f5474243cd20cedd8` to
+`7320151070c15683543de3ea3ab1b6eab834328e` and applied
+`000019_target_catalog.sql`. The dedicated database and instance were unchanged;
+verified TLS advertised `target-catalogs`. The isolated Control unit started at
+00:09:33 UTC. Original Control and Keycloak retained their 2026-08-31 start times
+of 19:01:41 and 19:01:36 UTC respectively; the synthetic LDAP unit retained its
+2026-10-03 23:06:37 UTC start time. Dashboard runtime readiness passed afterward.
+These timestamps record this acceptance run, not a requirement for future runs.
+
+The subsequent reviewed upgrade installed diagnostic source
+`c01c3d16f9de40223e5d666dc436a97989d45cc2` with
+`000020_diagnostic_snapshots.sql` and the explicit deployment pin. Verified TLS
+advertised `shared-diagnostic-snapshots`; the same source instance and recovery
+epoch1 remained. The isolated source restarted at 2026-10-04 00:30:17 UTC while
+original services and synthetic LDAP kept the timestamps above. Dashboard
+`9748e683df3b64b425c39ff18d30052b8140693a` then passed actual Alice/Bob PKCE,
+monitoring, cross-owner NFS logs, workload/graph and target/partition acceptance
+under the Go race detector. This confirms the synthetic integration, not
+corporate AD FS or physical-device behavior.
+
+### Reversible synthetic directory acceptance
+
+`scripts/dashboard-directory-scenario.py` is limited to the approved two-user,
+eight-group LDAPS fixture. It runs as the isolated source identity through
+pinned SSH, refuses unexpected baseline memberships or another pending receipt,
+and keeps exact original state bytes in a private fsynced recovery receipt.
+The only scenarios remove Alice's research viewer contribution, both Alice
+research contributions, or Bob's sole research viewer contribution. It changes
+no mapping, issuer, database grant, original directory, or service configuration.
+Normal Control reconciliation observes changes on its next 30-second cycle.
+
+The Dashboard repository's explicit `TestLabExistingTokensRespectDirectGroupChanges`
+opt-in authenticates and verifies its baseline before any mutation, then checks
+role-union preservation, last-group revocation and restoration using the same
+in-memory tokens. It restores the original state in cleanup and never prints
+tokens. Do not run other membership scenarios or source upgrades concurrently.
+If a test is interrupted, its private `.directory-acceptance-<receipt>.json`
+under `/etc/jobman-dashboard-lab/control-fixture` identifies the recovery action:
+
+```sh
+./scripts/dashboard-directory-scenario.py restore <receipt>
+```
+
+Restoration refuses to overwrite a concurrent external state change. Inspect
+such a failure; do not delete the receipt or reset the fixture. Restoring the
+original synthetic revision is supported because this helper uses it only as
+a within-connection consistency value, not a claim about corporate AD USN
+monotonicity. Keep these results qualified as synthetic directory acceptance.
+
+### Supplemental diagnostic observation fixture
+
+`prepare-dashboard-diagnostic.py` adds one explicit synthetic diagnostic target,
+agent and failed-observation job to the existing operations namespace. It never
+launches a workload. Use an independently reviewed, CI-green exact Control/helper
+build with migration21 and upgrade the isolated source first with the existing
+`upgrade-dashboard-source.py` guard. Preserve the original source instance/epoch,
+fixture manifest, directory state and immutable log objects.
+
+```sh
+python3 scripts/prepare-dashboard-diagnostic.py /absolute/exact/control-helper-build \
+  --source-revision EXACT_CURRENT_CONTROL_COMMIT
+./scripts/configure-dashboard-runtime.sh /absolute/exact/dashboard-build --reports
+python3 scripts/check-dashboard-runtime.py --reports
+```
+
+The preparation wrapper verifies the helper digest, dedicated database and current
+source revision before creating the new target. It grants source UID21902 only
+traverse on the existing local spool parent while preserving its effective ACL
+mask, creates a separate UID21902-owned diagnostic spool, and grants Alice read
+access only to that new spool. It copies exactly the two declared immutable
+objects as Alice into the existing NFS root, retains reader inheritance and root
+squashing, verifies exact hashes as broker UID21901, and proves Bob cannot read
+the files directly. No original service is restarted by preparation.
+
+The separate `.lab/dashboard/diagnostic-fixture.json` is immutable public fixture
+metadata, without credentials or log bytes. Its exact generation adds one broker
+and Dashboard mapping at configuration revision2; the renderer refuses to drop
+that mapping if the supplemental manifest goes missing. A partial helper failure
+leaves a private recovery receipt and refuses automatic retry or reset. Inspect
+that receipt and the dedicated source state; never delete it merely to rerun.
+
+After exact report-runtime deployment, run Dashboard's opt-in
+`TestLabDeployedMetadataReport` for the original imported history and
+`TestLabDeployedReportsAndSealedCitations` for the supplemental observed failure
+with `JOBMAN_DASHBOARD_LAB_RUNTIME=1`, `JOBMAN_DASHBOARD_LAB_REPORTS=1` and the
+authorized `JOBMAN_DASHBOARD_LAB_ROOT`. These use real PKCE, Control, NFS broker,
+collector, deterministic engine, paired object storage and sealed citation APIs.
+The expected log-tail citation must mask the configured synthetic canary, retain
+exact byte offsets and preserve original NFS bytes; no model provider is invoked.
+This is synthetic observation acceptance, not actual subprocess/Slurm execution,
+corporate AD FS or managed iPhone delivery evidence.
+
+The 2026-10-04 diagnostic acceptance used exact Dashboard
+`d3b31b6a52cc99913231840f9826b4ca94a97e7b` and reviewed Control/helper
+`d332a2b569333ae8aed9c2fc9ebc648d8eb5ba4e`. Source migration21 preserved
+instance `e633cf92-258d-48ff-965a-fda88d68ef3a` and recovery epoch1;
+Dashboard migration5 and configuration revision2 were verified. The new
+operations target `51ff8e7f-8036-4956-a7f7-7b3e34b519ce` has generation
+`998935c0-f9e4-4297-8af1-05cb545bca73`; its synthetic observation job is
+`5959cbc6-b152-4546-982b-3f140d3149cc` at revision5. Both immutable NFS
+objects passed designated-reader checks and unrelated-user denial.
+
+The combined Go race run of metadata reports, redacted log reports/sealed
+citations, original Alice/Bob monitoring and target/partition acceptance passed
+in 6.764 seconds. It verified a recognized permission-message finding, same-length
+redaction and exact sealed citation offsets, unchanged original NFS bytes, report
+idempotency/history and current cross-account/namespace denials. Runtime checks
+confirmed private object/policy ownership, narrow service write allowance,
+report-table grants and continued original Control/Keycloak availability. These
+results remain synthetic observation and test-identity evidence as described above.
+
+Live web report rendering was not verified in this run: Chrome blocked the
+short-lived read-only loopback inspection proxy with `ERR_BLOCKED_BY_CLIENT`.
+The proxy held a real synthetic account token only in server memory, checked
+upstream Lab TLS, exposed only bounded GET routes and was shut down after the
+block. No browser security setting, host DNS or host CA trust was changed.
+The service-level report/citation checks above do not prove browser OIDC/session
+behavior or successful live browser rendering.
+
+### Dashboard notification acceptance mode
+
+First validate and explicitly add the narrow event-read operation to the existing
+isolated Control service registration. This preserves its keys, namespaces and
+all user grants. Check-only never changes a file or restarts a service; explicit
+apply reloads only the isolated Control and retains its prior public policy.
+
+```sh
+python3 scripts/configure-dashboard-event-source.py
+python3 scripts/configure-dashboard-event-source.py --apply
+```
+
+Then, after reviewing and verifying an exact notification-capable Dashboard build, use:
+
+```sh
+./scripts/configure-dashboard-runtime.sh /absolute/exact/build --reports --notifications
+python3 scripts/check-dashboard-runtime.py --reports --notifications
+```
+
+`--notifications` enables durable source-event processing, pending-rule
+activation, inbox evaluation and the synthetic `org.jobman.dashboard` sandbox
+device topic. It supplies no APNs provider credentials and does not establish
+Apple or real-phone delivery. Existing report configuration remains opt-in via
+`--reports`; both flags must be retained on subsequent upgrades once enabled.
+Rendering and guest provisioning reject implicit removal of event processing.
+The application configuration revision advances independently of the unchanged
+broker configuration. A retained restore hold is not cleared by this option;
+use the separately reviewed Dashboard event-recovery procedure.
+
+The readiness check verifies migration/runtime grants and initial source feed
+state. It does not replace authenticated rule/inbox, replay, authorization,
+multi-Control or workload acceptance. The original Control and Keycloak services
+remain outside this isolated runtime upgrade.
+
+### Deployed notification cancellation acceptance
+
+After the reviewed durable-event Dashboard deployment and source registration,
+`dashboard-notification-scenario.py` prepares two new Alice-owned research jobs
+through ordinary Control submission and completes only a selected job through
+normal cancellation. It does not add agents or targets, alter AD fixtures, write
+Dashboard notification rows, or modify pre-existing jobs. This is synthetic
+cancellation-event acceptance, not real workload or Apple delivery acceptance.
+
+The operator installs the reviewed helper at
+`/usr/local/libexec/jobman-dashboard-lab/jobman-control-notification-helper-<commit>`
+and records its exact `revision`, `sha256` and running `sourceRevision` in
+`.lab/dashboard/notification-helper.json`. Source/database/instance/TLS and
+migration checks precede mutations. New source jobs/events and bounded host
+receipts beneath `.lab/dashboard/notifications/` remain as evidence; a partial
+private preparation receipt requires inspection and is never reset automatically.
+
+The Dashboard integration test uses real PKCE and its public rules/inbox APIs,
+then this wrapper's read-only exact-event `settled` barrier before asserting
+that a stopped rule produced no alert. Run from the Dashboard repository with
+`JOBMAN_DASHBOARD_LAB_ROOT` pointing here and both
+`JOBMAN_DASHBOARD_LAB_RUNTIME=1` and `JOBMAN_DASHBOARD_LAB_NOTIFICATIONS=1`:
+`go test -tags integration -race -count=1 ./internal/auth -run '^TestLabDeployedNotificationsFromControlTerminalEvents$' -timeout 8m`.
+See Dashboard's `docs/LAB_NOTIFICATIONS.md` for the exact receipt protocol and
+acceptance boundaries. Offline wrapper tests are available with
+`python3 scripts/test-dashboard-notifications.py` and perform no guest operations.

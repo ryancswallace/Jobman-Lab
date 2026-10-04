@@ -1,0 +1,20 @@
+---
+- name: Install isolated storage broker reading the existing NFS client mount
+  hosts: control01
+  become: true
+  gather_facts: false
+  vars:
+    dashboard_runtime_root: "{{ lab_root }}/.lab/dashboard/runtime"
+  roles:
+    - dashboard_broker
+
+- name: Install isolated Dashboard HTTPS application on existing storage VM
+  hosts: storage01
+  become: true
+  gather_facts: false
+  vars:
+    dashboard_runtime_root: "{{ lab_root }}/.lab/dashboard/runtime"
+    dashboard_reports_enabled: false
+    dashboard_notifications_enabled: false
+  roles:
+    - dashboard_app

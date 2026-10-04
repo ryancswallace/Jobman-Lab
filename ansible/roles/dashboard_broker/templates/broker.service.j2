@@ -1,0 +1,22 @@
+[Unit]
+Description=Isolated Dashboard Lab NFS log broker
+After=network-online.target jobman-dashboard-lab-control.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobman-dashboard-log
+Group=jobman-dashboard-log
+ExecStart=/usr/local/libexec/jobman-dashboard-lab/jobman-log-broker --config /etc/jobman-dashboard-broker-lab/config.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jobman-dashboard-broker-lab
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

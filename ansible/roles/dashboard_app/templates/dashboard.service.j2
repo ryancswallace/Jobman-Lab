@@ -1,0 +1,24 @@
+[Unit]
+Description=Isolated Dashboard Lab HTTPS application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobman-dashboard-app
+Group=jobman-dashboard-app
+ExecStart=/usr/local/libexec/jobman-dashboard-lab/jobman-dashboard --config /etc/jobman-dashboard-app-lab/config.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+{% if dashboard_reports_enabled %}
+ReadWritePaths=/var/lib/jobman-dashboard-app-lab/reports
+{% endif %}
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

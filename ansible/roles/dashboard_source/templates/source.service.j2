@@ -1,0 +1,22 @@
+[Unit]
+Description=Isolated synthetic Dashboard Control acceptance source
+Wants=network-online.target jobman-dashboard-lab-directory.service
+After=network-online.target jobman-dashboard-lab-directory.service
+
+[Service]
+Type=simple
+User=jobman-dashboard-source
+Group=jobman-dashboard-source
+EnvironmentFile={{ dashboard_fixture_root }}/control.env
+ExecStart=/usr/local/libexec/jobman-dashboard-lab/jobman-control
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

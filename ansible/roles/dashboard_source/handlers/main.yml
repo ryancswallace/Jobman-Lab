@@ -1,0 +1,7 @@
+---
+- name: Restart isolated source services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    daemon_reload: true
+    state: restarted
+  loop: [jobman-dashboard-lab-directory, jobman-dashboard-lab-control]
