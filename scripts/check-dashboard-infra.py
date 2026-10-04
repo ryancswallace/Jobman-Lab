@@ -110,50 +110,71 @@ def database_checks():
     print('PASS: host TLS/SAN verification, TLS-only SCRAM roles, runtime DML without DDL, database/role isolation, existing Control connection.')
 
 
-def acl_checks():
-    name = '.dashboard-acl-probe-' + uuid.uuid4().hex
-    server = '/srv/lab/data/jobman/alice/' + name
-    client = '/data/jobman/alice/' + name
-    create = f'''import os
-p={server!r}
+def acl_probe_source(server):
+    # Provision only this invocation's disposable synthetic store. The installed
+    # policy is not run against any existing Lab store by this acceptance check.
+    return f'''import importlib.machinery,importlib.util,os
+from pathlib import Path
+p=Path({server!r})
 os.umask(0o077)
-os.mkdir(p,0o750)
-for name,mode in [('readable',0o640),('masked',0o600)]:
- fd=os.open(p+'/'+name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,mode)
- os.write(fd,b'synthetic-dashboard-acl-probe\\n');os.close(fd)
-for name,mode in [('traversable',0o750),('masked-dir',0o700)]:os.mkdir(p+'/'+name,mode)
-'''
-    try:
-        result = ssh('storage01', 'sudo -u alice python3 -', create)
-        require(result.returncode == 0, 'Could not create disposable ACL fixtures')
-        mask_probe = f'''import importlib.machinery,importlib.util,os,subprocess
-p={server!r}
+os.mkdir(p,0o700)
 loader=importlib.machinery.SourceFileLoader('acl_policy','/usr/local/sbin/jobman-dashboard-provision-acls')
 spec=importlib.util.spec_from_loader(loader.name,loader);policy=importlib.util.module_from_spec(spec);loader.exec_module(policy)
-file=p+'/mask-regression';open(file,'w').close()
-os.mkdir(p+'/mask-regression-dir',0o700)
-subprocess.run(['setfacl','-m','u:21901:r-x,u:21002:rwx,g::rwx,m::r--',file],check=True)
-subprocess.run(['setfacl','-m','d:u:21901:r-x,d:u:21002:rwx,d:g::rwx,d:m::r--',p+'/mask-regression-dir'],check=True)
-for target in [file,p+'/mask-regression-dir']:
+policy.ROOT=p
+store=p/'jobman/alice';store.mkdir(parents=True,mode=0o750)
+policy.set_acl(store,'--set','u::rwx,u:21901:r-x,g::---,m::r-x,o::---')
+policy.set_acl(store,'-m','d:u::rwx,d:u:21901:r-x,d:g::---,d:m::r-x,d:o::---')
+parts=('namespaces','dashboard-probe','jobs','01990000-0000-7000-8000-000000000001','executions','01990000-0000-7000-8000-000000000002','logs','stdout')
+stream=store
+for part in parts:
+ stream=stream/part;stream.mkdir(mode=0o750)
+private=store/'private';private.mkdir(mode=0o700)
+before=private/'before';before.mkdir(mode=0o750)
+assert 'user:21901:r-x' in policy.acl(before) and 'mask::r-x' in policy.acl(before)
+policy.main()
+for parent in [private,before]:
+ assert not any(e.startswith(('user:21901:','default:user:21901:')) for e in policy.acl(parent))
+# The owner changing group bits must not reactivate a removed reader grant.
+private.chmod(0o750)
+after=private/'after';after.mkdir(mode=0o750)
+for path,mode in [(stream/'00000001.chunk',0o640),(stream/'masked',0o600),(after/'payload',0o640)]:
+ fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,mode)
+ os.write(fd,b'synthetic-dashboard-acl-probe\\n');os.close(fd)
+assert not any(e.startswith(('user:21901:','default:user:21901:')) for e in policy.acl(after/'payload'))
+file=private/'mask-regression';file.touch()
+private_dir=private/'mask-regression-dir';private_dir.mkdir(mode=0o700)
+policy.set_acl(file,'-m','u:21901:r-x,u:21002:rwx,g::rwx,m::r--')
+policy.set_acl(private_dir,'-m','d:u:21901:r-x,d:u:21002:rwx,d:g::rwx,d:m::r--')
+for target in [file,private_dir]:
  before=policy.acl(target);policy.remove_reader(target,before);after=policy.acl(target)
  expected=[entry for entry in before if not entry.startswith(('user:21901:','default:user:21901:'))]
  assert after==expected,'Removing reader changed an unrelated ACL or mask'
 '''
-        result = ssh('storage01', 'sudo -u alice python3 -', mask_probe)
-        require(result.returncode == 0, 'Named-reader removal changed unrelated effective access/default ACL masks')
-        result = ssh('control01', 'sudo -u jobman-dashboard-log test -r ' + shlex.quote(client+'/readable'))
-        require(result.returncode == 0, 'Reader cannot read inherited0640 log fixture over NFS')
-        for user, path, permission in [('jobman-dashboard-log', 'readable', '-w'),
-                                      ('bob', 'readable', '-r'),
-                                      ('jobman-dashboard-log', 'masked', '-r'),
-                                      ('jobman-dashboard-log', 'masked-dir', '-x')]:
+
+
+def acl_checks():
+    name = '.dashboard-acl-probe-' + uuid.uuid4().hex
+    server = '/srv/lab/data/jobman/alice/' + name
+    client = '/data/jobman/alice/' + name
+    stream = 'jobman/alice/namespaces/dashboard-probe/jobs/01990000-0000-7000-8000-000000000001/executions/01990000-0000-7000-8000-000000000002/logs/stdout/'
+    readable = stream + '00000001.chunk'
+    private = 'jobman/alice/private/after/payload'
+    try:
+        result = ssh('storage01', 'sudo -u alice python3 -', acl_probe_source(server))
+        require(result.returncode == 0, 'Disposable canonical/private ACL regression failed')
+        result = ssh('control01', 'sudo -u jobman-dashboard-log test -r ' + shlex.quote(client+'/'+readable))
+        require(result.returncode == 0, 'Reader cannot read inherited0640 canonical log fixture over NFS')
+        for user, path, permission in [('jobman-dashboard-log', readable, '-w'),
+                                      ('bob', readable, '-r'),
+                                      ('jobman-dashboard-log', stream+'masked', '-r'),
+                                      ('jobman-dashboard-log', private, '-r')]:
             result = ssh('control01', f'sudo -u {user} test {permission} '+shlex.quote(client+'/'+path))
             require(result.returncode == 1, f'Unexpected ACL access: {user} {permission} {path}')
-        result = ssh('control01', 'sudo test -r ' + shlex.quote(client+'/readable'))
+        result = ssh('control01', 'sudo test -r ' + shlex.quote(client+'/'+readable))
         require(result.returncode == 1, 'NFS root squash did not deny root read')
         probe = f'''import os,json,base64,stat
 p={client!r};out={{}}
-for name in ['.','readable','masked','traversable','masked-dir']:
+for name in ['.',{readable!r},{(stream+'masked')!r},{private!r}]:
  path=p+'/'+name;s=os.stat(path);x={{}}
  for attr in ['system.nfs4_acl','system.posix_acl_access','system.posix_acl_default']:
   try:x[attr]={{'base64':base64.b64encode(os.getxattr(path,attr)).decode()}}
@@ -169,8 +190,8 @@ print(json.dumps(out))
         evidence['server_posix_acl'] = result.stdout
         (STATE/'acl-probe.json').write_text(json.dumps(evidence,indent=2)+'\n')
         os.chmod(STATE/'acl-probe.json',0o600)
-        print('PASS: inherited0640/0750 reader access over NFS; no reader write, no Bob read, root_squash retained;0600/0700 correctly remain masked.')
-        print('Producer opt-in remains required. Non-secret ACL evidence: .lab/dashboard/acl-probe.json')
+        print('PASS: canonical inherited0640 log read over NFS; stripped private-parent defaults deny new0750/0640 children; no reader write/Bob read; root_squash retained.')
+        print('Trusted producer private modes remain required. Non-secret ACL evidence: .lab/dashboard/acl-probe.json')
     finally:
         # Delete only the unpredictable subtree created by this invocation.
         result = ssh('storage01', 'sudo -u alice python3 -', f'import shutil; shutil.rmtree({server!r},ignore_errors=True)\n')

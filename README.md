@@ -261,9 +261,10 @@ and Control. Named-user ACLs allow only traversal of `/srv/lab/data` and
 `/srv/lab/data/jobman`, then read/traversal of canonical namespace/job/execution
 prefixes within Alice's and Bob's stores. Read grants apply only to canonical
 `logs/{stdout,stderr}/<sequence>.chunk` objects. Existing nonlog file grants to
-this reader are removed; private directories retain a zero access mask.
-Per-user directory defaults provide the exact named reader inheritance while
-owning-group and other entries remain empty. Legacy paths with incompatible
+this reader are removed. Existing private and noncanonical directories lose
+both this reader's access entry and its default entry, without changing other
+entries or ACL masks. Only existing canonical prefixes receive named-reader
+defaults; owning-group and other entries remain empty. Legacy paths with incompatible
 preexisting ACLs are excluded, preserving their prior owner/group rights;
 provisioning reports the exclusion count. Removing the reader preserves existing
 ACL masks; adding outer traversal fails if it would activate a previously masked
@@ -272,20 +273,33 @@ migration before the strict producer policy can use them. The reader receives
 no write permission. The existing NFSv4.2 export retains `root_squash`. The remote reader
 uses `/data/jobman/<user>`; a reader on storage uses `/srv/lab/data/jobman/<user>`.
 
-**Producer integration is required for new private logs.** POSIX default ACLs
-are masked when a producer creates files with mode `0600` or directories with
-`0700`. The bounded check explicitly proves this denial. A store-specific,
-validated reader-policy opt-in must create published log objects with the
-appropriate ACL mask (`0640`/`0750`) while keeping owning-group/other access
-empty. The infrastructure does not change global producer modes, run a
-privileged ACL reconciler, or grant root/capability-based read bypasses. NFS
-clients expose `system.nfs4_acl`; the probe saves its native ACL representation
-for producer-policy validation.
+**Producer integration and private modes remain required.** POSIX defaults
+cannot filter future child names. A new noncanonical child created directly
+beneath a canonical prefix still inherits that prefix's default ACL; a trusted
+producer must keep private directories `0700` and files `0600`. This provisioning
+pass removes stale reader inheritance from existing private paths; it does not
+isolate arbitrary producers that create private data with `0750`/`0640` or later
+change its permissions. A store-specific, validated reader-policy opt-in must
+create only published log objects with the appropriate ACL mask (`0640`/`0750`)
+while keeping owning-group/other access empty. The strict producer may reject
+existing private paths whose ACL no longer matches its expected inherited form;
+verify compatibility before enabling or reprovisioning a store. This helper
+does not loosen that producer check, change global modes, run a privileged ACL
+reconciler, or grant root/capability-based read bypasses. NFS clients expose
+`system.nfs4_acl`; the probe saves its native ACL representation.
+
+The portable `scripts/test-dashboard-log-acls.py` tests the provisioning boundary.
+On Linux with `getfacl`/`setfacl`, it also uses a fresh temporary tree to prove the
+reported private-parent inheritance case and a canonical log positive case.
+`JOBMAN_TEST_POSIX_ACL=1` requires that Linux test instead of skipping when tools
+are absent. A root invocation additionally checks read decisions under numeric
+UID `21901` in child processes, without creating users or accessing Lab stores.
 
 `make check-dashboard-infra` verifies host certificate/SAN checking, TLS-only
 role authentication, runtime DML without DDL, cross-database and role isolation,
-existing Control connection compatibility, inherited reader access, denied
-reader writes, denied Bob access to Alice's probe, and root-squash behavior.
+existing Control connection compatibility, canonical inherited reader access,
+denied reader writes, denied Bob access to Alice's probe, root-squash behavior,
+and denial for new `0750`/`0640` children of a provisioned private parent.
 It creates unpredictable temporary table/directory names and removes only
 those probes, then saves non-secret ACL metadata in
 `.lab/dashboard/acl-probe.json`. It never prints log bytes or passwords.

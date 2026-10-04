@@ -111,15 +111,14 @@ def main():
     for path, directory, entries in objects:
         store = next((store for store in stores if path.is_relative_to(store)), None)
         compatible = not any(path == parent or path.is_relative_to(parent) for parent in excluded)
-        if store is not None and directory and compatible:
-            parts = path.relative_to(store).parts
-            shared = shared_directory(parts)
-            # Private paths retain mask0 even though the named entry/defaults
-            # exist; new private files600 inherit the same effective denial.
-            set_acl(path, '-m', 'u:' + READER + ':r-x,m::' + ('r-x' if shared else '---'))
+        if store is not None and directory and compatible and shared_directory(path.relative_to(store).parts):
+            # Defaults are necessary for the opted-in producer's canonical log
+            # prefixes. Never install them on existing private/noncanonical
+            # directories: a later 0750 child would unmask the inherited reader.
+            set_acl(path, '-m', 'u:' + READER + ':r-x,m::r-x')
             set_acl(path, '-m', 'd:u::rwx,d:u:' + READER + ':r-x,d:g::---,d:m::r-x,d:o::---')
-            shared_dirs += int(shared)
-        elif store is not None and compatible and shared_file(path.relative_to(store).parts):
+            shared_dirs += 1
+        elif store is not None and not directory and compatible and shared_file(path.relative_to(store).parts):
             set_acl(path, '-m', 'u:' + READER + ':r--,m::r--')
             shared_logs += 1
         else:
