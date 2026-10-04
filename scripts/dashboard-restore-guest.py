@@ -179,8 +179,15 @@ def candidate(payload):
 def process(role, binary, allow_stopped=False):
     unit = Path('/etc/systemd/system') / UNIT[role]
     raw, _ = read(unit, 16384, owner=(0, 0), mode=0o644)
-    need(raw.count(b'TimeoutStopSec=') == 1 and b'\nTimeoutStopSec=90s\n' in raw and b'\nKillMode=control-group\n' in raw, 'Reviewed primary stop budget changed')
-    need(run(['systemctl','show',UNIT[role],'--property=DropInPaths','--value']).strip() == b'', 'Unreviewed primary unit override')
+    need(raw.count(b'TimeoutStopSec=') == 1 and b'\nTimeoutStopSec=90s\n' in raw, 'Reviewed primary stop budget changed')
+    # KillMode defaults to control-group in the deployed split templates. Bind
+    # the effective policy as well as the exact raw unit hash retained below.
+    policy_raw = run(['systemctl','show',UNIT[role],'--property=KillMode','--property=TimeoutStopUSec','--property=DropInPaths'], timeout=5, maximum=2048)
+    pairs = [line.split('=',1) for line in policy_raw.decode().splitlines()]
+    need(len(pairs) == 3 and all(len(pair) == 2 for pair in pairs), 'Effective primary stop policy is invalid')
+    policy = dict(pairs)
+    need(set(policy) == {'KillMode','TimeoutStopUSec','DropInPaths'} and policy['KillMode'] == 'control-group' and
+         policy['TimeoutStopUSec'] in ('1min 30s','90s') and policy['DropInPaths'] == '', 'Effective primary stop budget or override changed')
     active = subprocess.run(['systemctl', 'is-active', '--quiet', UNIT[role]], capture_output=True, timeout=command_timeout(5)).returncode
     if active != 0:
         state = run(['systemctl', 'show', UNIT[role], '--property=ActiveState', '--value']).decode().strip()

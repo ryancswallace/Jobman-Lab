@@ -27,6 +27,30 @@ snapshot = load('restore_test_snapshot', 'snapshot-dashboard-restore.py')
 
 
 class RestoreApplyTests(unittest.TestCase):
+    def test_primary_default_kill_mode_requires_effective_exact_stop_policy(self):
+        raw = b'[Service]\nTimeoutStopSec=90s\n'
+        effective = b'KillMode=control-group\nTimeoutStopUSec=1min 30s\nDropInPaths=\n'
+        for unit in (raw, raw+b'KillMode=control-group\n'):
+            with patch.object(guest,'read',return_value=(unit,None)),patch.object(guest,'run',side_effect=[effective,b'inactive\n']) as runner,\
+                 patch.object(guest.subprocess,'run',return_value=types.SimpleNamespace(returncode=3)):
+                result=guest.process('api','/fixed/binary',allow_stopped=True)
+                self.assertEqual(result,{'unitSHA256':guest.digest(unit),'active':False})
+                self.assertEqual(runner.call_args_list[0].kwargs,{'timeout':5,'maximum':2048})
+
+    def test_primary_stop_policy_rejects_effective_drift_before_process_action(self):
+        raw=b'[Service]\nTimeoutStopSec=90s\n'
+        valid=b'KillMode=control-group\nTimeoutStopUSec=1min 30s\nDropInPaths=\n'
+        for effective in (valid.replace(b'control-group',b'process'),valid.replace(b'1min 30s',b'2min'),
+                          valid.replace(b'DropInPaths=',b'DropInPaths=/etc/override.conf'),
+                          valid+b'KillMode=control-group\n',valid.replace(b'KillMode=control-group\n',b'')):
+            with self.subTest(effective=effective),patch.object(guest,'read',return_value=(raw,None)),\
+                 patch.object(guest,'run',return_value=effective),patch.object(guest.subprocess,'run') as active:
+                with self.assertRaises(ValueError):guest.process('worker','/fixed/binary')
+                active.assert_not_called()
+        with patch.object(guest,'read',return_value=(raw.replace(b'90s',b'100s'),None)),patch.object(guest,'run') as runner:
+            with self.assertRaises(ValueError):guest.process('api','/fixed/binary')
+            runner.assert_not_called()
+
     def test_dump_success_and_exact_hash_with_restrictive_umask(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'dump.partial'
