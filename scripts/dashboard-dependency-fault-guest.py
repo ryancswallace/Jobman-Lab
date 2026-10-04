@@ -407,12 +407,23 @@ def recover(plan,fault,watchdog=False):
                     time.sleep(.1); state=properties(unit)['ActiveState']
                 p.need(state in ('active','inactive','failed'),'unit_transitional')
                 if state!='active': run(['systemctl','start','--no-block',unit],'fault_restart')
-                while True:
-                    try: recovered=process(unit); break
-                    except (ValueError,OSError): remaining(1); time.sleep(.1)
                 old=expected_processes(plan,host,fault)[unit]
-                p.need(all(recovered[k]==old[k] for k in old if k not in ('pid','start')) and int(recovered['start'])>=int(old['start']),'restarted_identity')
-                if (root/'applied.json').exists(): p.need(int(recovered['start'])>int(old['start']),'stopped_process_not_restarted')
+                confirmed_stop=(root/'applied.json').exists()
+                while True:
+                    remaining(1)
+                    try:
+                        recovered=process(unit)
+                        remaining(1)
+                        # Type=simple can become active while the ExecStart
+                        # wrapper is still transitioning to its final image.
+                        # Observe convergence under the same recovery deadline;
+                        # never issue another start or accept a weaker identity.
+                        if (set(recovered)==set(old) and
+                            all(recovered[k]==old[k] for k in old if k not in ('pid','start')) and
+                            int(recovered['start'])>=int(old['start']) and
+                            (not confirmed_stop or int(recovered['start'])>int(old['start']))): break
+                    except (ValueError,OSError): pass
+                    time.sleep(remaining(.1))
             elif fault=='broker_pause':
                 old=expected_processes(plan,host,fault)[unit]; p.need(process(unit)==old,'paused_process_replaced')
                 os.kill(int(old['pid']),signal.SIGCONT); wait_state(old['pid'],False); recovered=process(unit)

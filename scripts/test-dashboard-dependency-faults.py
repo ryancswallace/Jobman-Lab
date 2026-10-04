@@ -205,6 +205,41 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(g,'expected_processes',return_value={UNIT:proc()}),patch.object(g,'process',return_value=proc(pid='999')),patch.object(g.os,'kill') as kill:
             with self.assertRaises(ValueError):g.recover(plan,'broker_pause',watchdog=True)
             kill.assert_not_called()
+    def test_active_wrapper_converges_to_exact_final_identity_without_second_start(self):
+        plan=baseline();root=self.base/OP/'broker_stop';root.mkdir()
+        g.receipt(root,'intent',{'planSHA256':p.sha(p.encoded(plan)),'fault':'broker_stop','createdAt':0})
+        g.receipt(root,'applied',{'fault':'broker_stop','atMonotonic':1})
+        final=proc(pid='101',start='1100');wrapper=dict(final,binary='/usr/bin/python3',binarySHA256='d'*64,argumentsSHA256='e'*64)
+        with patch.object(g,'expected_processes',return_value={UNIT:proc()}),patch.object(g,'properties',return_value={'ActiveState':'inactive'}),patch.object(g,'process',side_effect=[wrapper,final]) as observed,patch.object(g.time,'sleep'):
+            result=g.recover(plan,'broker_stop',watchdog=True)
+        self.assertEqual(result['process'],final);self.assertEqual(observed.call_count,2)
+        self.assertEqual(self.commands,[['systemctl','start','--no-block',UNIT]])
+        self.assertTrue((root/'restored.json').exists());self.assertTrue((root/'watchdog-complete.json').exists())
+    def test_exact_identity_observed_after_deadline_cannot_create_success_receipt(self):
+        plan=baseline();root=self.base/OP/'broker_stop';root.mkdir()
+        g.receipt(root,'intent',{'planSHA256':p.sha(p.encoded(plan)),'fault':'broker_stop','createdAt':0})
+        g.receipt(root,'applied',{'fault':'broker_stop','atMonotonic':1});clock=[100.0]
+        def slow_process(_):clock[0]+=26;return proc(pid='101',start='1100')
+        with patch.object(g,'expected_processes',return_value={UNIT:proc()}),patch.object(g,'properties',return_value={'ActiveState':'inactive'}),patch.object(g,'process',side_effect=slow_process),patch.object(g.time,'monotonic',side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError,'operation_deadline'):g.recover(plan,'broker_stop',watchdog=True)
+        self.assertEqual(self.commands,[['systemctl','start','--no-block',UNIT]])
+        self.assertFalse((root/'restored.json').exists());self.assertFalse((root/'watchdog-complete.json').exists())
+    def test_persistent_active_identity_mismatch_expires_without_restart_retry(self):
+        for field,value in [('uid',0),('binary','/wrong'),('binarySHA256','d'*64),('argumentsSHA256','d'*64),('unitSHA256','d'*64),('bootId',OP),('start','1000')]:
+            with self.subTest(field=field):
+                plan=baseline();root=self.base/OP/'broker_stop'
+                if root.exists():
+                    for path in root.iterdir():path.unlink()
+                else:root.mkdir()
+                g.receipt(root,'intent',{'planSHA256':p.sha(p.encoded(plan)),'fault':'broker_stop','createdAt':0})
+                g.receipt(root,'applied',{'fault':'broker_stop','atMonotonic':1})
+                wrong=proc(pid='101',start='1100');wrong[field]=value;clock=[100.0];self.commands=[]
+                def advance(_):clock[0]+=10
+                with patch.object(g,'expected_processes',return_value={UNIT:proc()}),patch.object(g,'properties',return_value={'ActiveState':'inactive'}),patch.object(g,'process',return_value=wrong) as observed,patch.object(g.time,'sleep',side_effect=advance),patch.object(g.time,'monotonic',side_effect=lambda:clock[0]):
+                    with self.assertRaisesRegex(ValueError,'operation_deadline'):g.recover(plan,'broker_stop',watchdog=True)
+                self.assertGreater(observed.call_count,1)
+                self.assertEqual(self.commands,[['systemctl','start','--no-block',UNIT]])
+                self.assertFalse((root/'restored.json').exists());self.assertFalse((root/'watchdog-complete.json').exists())
 
 
 class WatchdogTests(unittest.TestCase):
