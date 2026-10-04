@@ -660,3 +660,30 @@ The readiness check verifies migration/runtime grants and initial source feed
 state. It does not replace authenticated rule/inbox, replay, authorization,
 multi-Control or workload acceptance. The original Control and Keycloak services
 remain outside this isolated runtime upgrade.
+
+### Deployed notification cancellation acceptance
+
+After the reviewed durable-event Dashboard deployment and source registration,
+`dashboard-notification-scenario.py` prepares two new Alice-owned research jobs
+through ordinary Control submission and completes only a selected job through
+normal cancellation. It does not add agents or targets, alter AD fixtures, write
+Dashboard notification rows, or modify pre-existing jobs. This is synthetic
+cancellation-event acceptance, not real workload or Apple delivery acceptance.
+
+The operator installs the reviewed helper at
+`/usr/local/libexec/jobman-dashboard-lab/jobman-control-notification-helper-<commit>`
+and records its exact `revision`, `sha256` and running `sourceRevision` in
+`.lab/dashboard/notification-helper.json`. Source/database/instance/TLS and
+migration checks precede mutations. New source jobs/events and bounded host
+receipts beneath `.lab/dashboard/notifications/` remain as evidence; a partial
+private preparation receipt requires inspection and is never reset automatically.
+
+The Dashboard integration test uses real PKCE and its public rules/inbox APIs,
+then this wrapper's read-only exact-event `settled` barrier before asserting
+that a stopped rule produced no alert. Run from the Dashboard repository with
+`JOBMAN_DASHBOARD_LAB_ROOT` pointing here and both
+`JOBMAN_DASHBOARD_LAB_RUNTIME=1` and `JOBMAN_DASHBOARD_LAB_NOTIFICATIONS=1`:
+`go test -tags integration -race -count=1 ./internal/auth -run '^TestLabDeployedNotificationsFromControlTerminalEvents$' -timeout 8m`.
+See Dashboard's `docs/LAB_NOTIFICATIONS.md` for the exact receipt protocol and
+acceptance boundaries. Offline wrapper tests are available with
+`python3 scripts/test-dashboard-notifications.py` and perform no guest operations.
