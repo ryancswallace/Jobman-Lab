@@ -23,6 +23,7 @@ def load(name):
 p=load('dashboard-dependency-fault-plan'); g=load('dashboard-dependency-fault-guest'); h=load('dashboard-dependency-faults')
 REV='a'*40; BOOT='78000000-0000-4000-8000-000000000001'; OP='78000000-0000-4000-8000-000000000002'; SHA='c'*64
 UNIT='jobman-dashboard-lab-broker'
+CONTROL='jobman-dashboard-lab-control'
 
 
 def proc(uid=21901,pid='100',start='1000'):
@@ -36,7 +37,7 @@ def baseline(scenario='broker'):
         db['sources'].append({'deploymentId':dep,'controlInstanceId':instance,'recoveryEpoch':'1','configurationRevision':8,
         'namespaceIds':['78000000-0000-4000-8000-000000000010'],'status':'active','generation':'100','lastPosition':'1000','openGaps':0,'unfinishedRecoveries':0})
     control={'host':'control01','revision':REV,'bootId':BOOT,'configurationRevisions':[8], 'preservedSHA256':SHA,'files':{},'capabilities':[],
-      'processes':{UNIT:proc(),'jobman-dashboard-lab-directory':proc(21902)},'firewallSHA256':None}
+      'processes':{UNIT:proc(),'jobman-dashboard-lab-directory':proc(21902),CONTROL:proc(21902)},'firewallSHA256':None}
     storage=dict(copy.deepcopy(control),host='storage01',processes={'jobman-dashboard-lab-api':proc(21904),'jobman-dashboard-lab-worker':proc(21905)},firewallSHA256=SHA)
     snapshot={'control01':control,'storage01':storage,'pg01':{'database':db}}
     return p.make(snapshot,scenario,OP,REV,{n:SHA for n in p.IMPLEMENTATION},int(time.time()))
@@ -255,9 +256,9 @@ class WatchdogTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'pause_process_changed'):g.begin(plan,'broker_pause')
                 kill.assert_not_called()
     def test_delayed_specific_intent_cannot_begin_late_stop_or_pause(self):
-        for fault in ('broker_stop','broker_pause'):
+        for fault in ('broker_stop','broker_pause','control_pause'):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as raw:
-                base=Path(raw).resolve();plan=baseline();plan['faults']=[fault];(base/OP).mkdir()
+                base=Path(raw).resolve();plan=baseline('control' if fault=='control_pause' else 'broker');plan['faults']=[fault];(base/OP).mkdir()
                 root=base/OP/fault;clock=[100.0];original_receipt=g.receipt
                 def directory(path,create=False):
                     if create:path.mkdir()
@@ -265,7 +266,7 @@ class WatchdogTests(unittest.TestCase):
                 def slow_receipt(path,name,value):
                     original_receipt(path,name,value)
                     if name in ('stop-intent','pause-intent'):clock[0]+=p.FAULTS[fault]['watchdogSeconds']
-                with patch.object(g,'BASE',base),patch.object(g,'locked',return_value=contextlib.nullcontext()),patch.object(g,'directory',side_effect=directory),patch.object(g,'verify_staged'),patch.object(g,'unchanged'),patch.object(g,'arm_watchdog',return_value=clock[0]+p.FAULTS[fault]['watchdogSeconds']),patch.object(g,'target_pins'),patch.object(g,'process',return_value=proc()),patch.object(g,'receipt',side_effect=slow_receipt),patch.object(g.time,'monotonic',side_effect=lambda:clock[0]),patch.object(g,'run') as command,patch.object(g.os,'kill') as kill:
+                with patch.object(g,'BASE',base),patch.object(g,'locked',return_value=contextlib.nullcontext()),patch.object(g,'directory',side_effect=directory),patch.object(g,'verify_staged'),patch.object(g,'unchanged'),patch.object(g,'arm_watchdog',return_value=clock[0]+p.FAULTS[fault]['watchdogSeconds']),patch.object(g,'target_pins'),patch.object(g,'process',return_value=proc(p.FAULTS[fault]['uid'])),patch.object(g,'receipt',side_effect=slow_receipt),patch.object(g.time,'monotonic',side_effect=lambda:clock[0]),patch.object(g,'run') as command,patch.object(g.os,'kill') as kill:
                     with self.assertRaisesRegex(ValueError,'fault_window_expired'):g.begin(plan,fault)
                     command.assert_not_called();kill.assert_not_called()
                 self.assertTrue((root/('stop-intent.json' if fault.endswith('_stop') else 'pause-intent.json')).exists())
@@ -321,6 +322,121 @@ class HostStateTests(unittest.TestCase):
             with patch.object(h,'load_plan',return_value=(plan,{})),patch.object(h,'remote',side_effect=remote),patch.object(h,'operation_record'):
                 with self.assertRaises(ValueError):h.phase(args)
             self.assertEqual(phases,['database-check','begin']);self.assertTrue((root/'broker_stop.pending.json').exists())
+
+
+class ControlPauseTests(unittest.TestCase):
+    def test_only_primary_control_and_fixed_watchdog_are_admitted(self):
+        plan=baseline('control');p.validate(plan)
+        self.assertEqual(plan['faults'],['control_pause'])
+        self.assertEqual(p.FAULTS['control_pause'],{'host':'control01','unit':CONTROL,'uid':21902,'watchdogSeconds':45,'applyReserveSeconds':30})
+        for uid in (0,21901,21907):
+            wrong=copy.deepcopy(plan);wrong['snapshot']['control01']['processes'][CONTROL]['uid']=uid
+            with self.assertRaisesRegex(ValueError,'fault_process_owner'):p.validate(wrong)
+        wrong=copy.deepcopy(plan);wrong['faults']=['broker_pause']
+        with self.assertRaises(ValueError):p.validate(wrong)
+
+    def environment(self, base, stack):
+        def directory(path,create=False):
+            if create:path.mkdir()
+            else:self.assertTrue(path.is_dir())
+        for name,value in [('BASE',base),('locked',lambda **_:contextlib.nullcontext()),('directory',directory),('verify_staged',lambda *_:None),('read',lambda path,*_a,**_k:Path(path).read_bytes())]:
+            stack.enter_context(patch.object(g,name,value))
+        stack.enter_context(patch.object(g,'target_pins'))
+        stack.enter_context(patch.object(g,'wait_state'))
+
+    def test_acknowledged_timer_precedes_stop_and_recovery_uses_no_source_http(self):
+        with tempfile.TemporaryDirectory() as raw,contextlib.ExitStack() as stack:
+            base=Path(raw).resolve();(base/OP).mkdir();plan=baseline('control');root=base/OP/'control_pause';calls=[]
+            self.environment(base,stack)
+            stack.enter_context(patch.object(g,'unchanged'))
+            stack.enter_context(patch.object(g,'source_capabilities',side_effect=AssertionError('paused source HTTP is forbidden')))
+            stack.enter_context(patch.object(g,'host_snapshot',side_effect=AssertionError('recovery must not resnapshot HTTP')))
+            def command(args,code,**_):
+                calls.append(code)
+                if code=='watchdog_ack':return ('ActiveState=active\nTriggers='+g.timer_name(plan,'control_pause')+'.service\n').encode()
+                return b''
+            stack.enter_context(patch.object(g,'run',side_effect=command))
+            stack.enter_context(patch.object(g,'process',return_value=proc(21902)))
+            def signal(pid,kind):
+                self.assertEqual(pid,100);self.assertTrue((root/'watchdog-armed.json').exists())
+                if kind==g.signal.SIGSTOP:
+                    self.assertEqual(calls,['watchdog_arm','watchdog_ack']);self.assertTrue((root/'pause-intent.json').exists())
+                calls.append(kind)
+            stack.enter_context(patch.object(g.os,'kill',side_effect=signal))
+            self.assertTrue(g.begin(plan,'control_pause')['applied'])
+            result=g.recover(plan,'control_pause',watchdog=True)
+            self.assertEqual(result['process'],proc(21902));self.assertTrue(result['restored'])
+            self.assertEqual(calls,['watchdog_arm','watchdog_ack',g.signal.SIGSTOP,g.signal.SIGCONT])
+            self.assertEqual(g.recover(plan,'control_pause',watchdog=True),result)
+            self.assertEqual(calls.count(g.signal.SIGCONT),1)
+
+    def test_real_target_guard_reads_only_primary_identity_and_material(self):
+        plan=baseline('control');expected=plan['snapshot']['control01']['processes'][CONTROL];raw=b'exact guarded bytes'
+        expected['unitSHA256']=expected['binarySHA256']=p.sha(raw)
+        primary='/etc/jobman-dashboard-lab/control-fixture/control.env';secondary='/etc/jobman-dashboard-secondary/control/control.env'
+        plan['snapshot']['control01']['files']={primary:p.sha(raw),secondary:p.sha(raw)};reads=[]
+        def read(path,uid,mode=0o600,maximum=2<<20):
+            reads.append((str(path),uid,mode));return raw
+        with patch.object(g.Path,'read_text',return_value=BOOT),patch.object(g,'read',side_effect=read),patch.object(g,'properties'),patch.object(g,'source_capabilities',side_effect=AssertionError('no source HTTP')):
+            g.target_pins(plan,'control_pause')
+        self.assertEqual(reads,[('/etc/systemd/system/'+CONTROL+'.service',0,0o644),(expected['binary'],0,0o755),(primary,21902,0o600)])
+        with patch.object(g.Path,'read_text',return_value=OP),patch.object(g,'read') as read:
+            with self.assertRaisesRegex(ValueError,'boot_changed'):g.target_pins(plan,'control_pause')
+            read.assert_not_called()
+
+    def test_failed_timer_ack_never_signals(self):
+        with tempfile.TemporaryDirectory() as raw,contextlib.ExitStack() as stack:
+            base=Path(raw).resolve();(base/OP).mkdir();plan=baseline('control')
+            self.environment(base,stack);stack.enter_context(patch.object(g,'unchanged'))
+            stack.enter_context(patch.object(g,'run',return_value=b'ActiveState=inactive\nTriggers=wrong.service\n'))
+            kill=stack.enter_context(patch.object(g.os,'kill'))
+            with self.assertRaisesRegex(ValueError,'watchdog_not_armed'):g.begin(plan,'control_pause')
+            kill.assert_not_called();self.assertFalse((base/OP/'control_pause'/'applied.json').exists())
+
+    def test_identity_drift_before_either_signal_is_rejected(self):
+        for phase in ('begin','recover'):
+            for field,value in [('pid','999'),('start','999'),('bootId',OP),('uid',21907),('binary','/wrong'),('binarySHA256','d'*64),('unitSHA256','d'*64),('argumentsSHA256','d'*64)]:
+                with self.subTest(phase=phase,field=field),tempfile.TemporaryDirectory() as raw,contextlib.ExitStack() as stack:
+                    base=Path(raw).resolve();(base/OP).mkdir();plan=baseline('control');root=base/OP/'control_pause'
+                    self.environment(base,stack);stack.enter_context(patch.object(g,'unchanged'))
+                    stack.enter_context(patch.object(g,'arm_watchdog',return_value=time.monotonic()+45))
+                    wrong=proc(21902);wrong[field]=value
+                    stack.enter_context(patch.object(g,'process',side_effect=[proc(21902),wrong] if phase=='begin' else [wrong]))
+                    kill=stack.enter_context(patch.object(g.os,'kill'))
+                    if phase=='recover':
+                        root.mkdir();g.receipt(root,'intent',{'planSHA256':p.sha(p.encoded(plan)),'fault':'control_pause','createdAt':0})
+                    with self.assertRaises(ValueError):getattr(g,phase)(plan,'control_pause')
+                    kill.assert_not_called();self.assertFalse((root/'restored.json').exists())
+
+    def test_post_continue_identity_and_status_must_still_be_exact(self):
+        with tempfile.TemporaryDirectory() as raw,contextlib.ExitStack() as stack:
+            base=Path(raw).resolve();root=base/OP/'control_pause';root.mkdir(parents=True);plan=baseline('control')
+            self.environment(base,stack)
+            g.receipt(root,'intent',{'planSHA256':p.sha(p.encoded(plan)),'fault':'control_pause','createdAt':0})
+            stack.enter_context(patch.object(g,'process',side_effect=[proc(21902),proc(21902,pid='999')]))
+            kill=stack.enter_context(patch.object(g.os,'kill'))
+            with self.assertRaisesRegex(ValueError,'continued_process_changed'):g.recover(plan,'control_pause')
+            kill.assert_called_once_with(100,g.signal.SIGCONT)
+            self.assertFalse((root/'restored.json').exists())
+
+    def test_pause_status_is_local_exact_process_proof(self):
+        with tempfile.TemporaryDirectory() as raw,contextlib.ExitStack() as stack:
+            base=Path(raw).resolve();root=base/OP/'control_pause';root.mkdir(parents=True);plan=baseline('control')
+            self.environment(base,stack)
+            stack.enter_context(patch.object(g.os,'geteuid',return_value=0));stack.enter_context(patch.object(g.sys,'platform','linux'))
+            stack.enter_context(patch.object(g.socket,'gethostname',return_value='control01'))
+            stack.enter_context(patch.object(g,'run',return_value=b'ActiveState=inactive\nResult=success\n'))
+            stack.enter_context(patch.object(g,'source_capabilities',side_effect=AssertionError('paused source HTTP is forbidden')))
+            stack.enter_context(patch.object(g,'host_snapshot',side_effect=AssertionError('no HTTP resnapshot')))
+            stack.enter_context(patch.object(g,'process',return_value=proc(21902)))
+            payload={'host':'control01','phase':'status','fault':'control_pause','plan':plan}
+            self.assertTrue(g.execute(payload)['paused'])
+            g.receipt(root,'restored',{'operationId':OP,'fault':'control_pause','restored':True,'process':proc(21902)})
+            self.assertFalse(g.execute(payload)['paused'])
+            g.wait_state.assert_called_with('100',False)
+            bad=p.decode((root/'restored.json').read_bytes());bad['process']['pid']='999'
+            (root/'restored.json').write_bytes(p.encoded(bad))
+            with self.assertRaisesRegex(ValueError,'control_restore_receipt_changed'):g.execute(payload)
 
 
 if __name__=='__main__':unittest.main()

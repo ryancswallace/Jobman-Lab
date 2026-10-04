@@ -14,10 +14,11 @@ FAULTS = {
     'directory_stop': {'host': 'control01', 'unit': 'jobman-dashboard-lab-directory', 'uid': 21902, 'watchdogSeconds': 180, 'applyReserveSeconds': 145},
     'broker_stop': {'host': 'control01', 'unit': 'jobman-dashboard-lab-broker', 'uid': 21901, 'watchdogSeconds': 120, 'applyReserveSeconds': 100},
     'broker_pause': {'host': 'control01', 'unit': 'jobman-dashboard-lab-broker', 'uid': 21901, 'watchdogSeconds': 45, 'applyReserveSeconds': 30},
+    'control_pause': {'host': 'control01', 'unit': 'jobman-dashboard-lab-control', 'uid': 21902, 'watchdogSeconds': 45, 'applyReserveSeconds': 30},
     'database_reject': {'host': 'storage01', 'unit': None, 'uid': None, 'watchdogSeconds': 45, 'applyReserveSeconds': 30},
     'database_drop': {'host': 'storage01', 'unit': None, 'uid': None, 'watchdogSeconds': 45, 'applyReserveSeconds': 30},
 }
-SCENARIOS = {'directory': ['directory_stop'], 'broker': ['broker_stop', 'broker_pause'],
+SCENARIOS = {'control': ['control_pause'], 'directory': ['directory_stop'], 'broker': ['broker_stop', 'broker_pause'],
              'database': ['database_reject', 'database_drop']}
 IMPLEMENTATION = ['dashboard-dependency-fault-plan.py', 'dashboard-dependency-fault-guest.py',
                   'dashboard-dependency-faults.py']

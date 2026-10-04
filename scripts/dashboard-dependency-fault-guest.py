@@ -362,7 +362,7 @@ def begin(plan,fault):
                 run(['systemctl','stop',unit],'fault_stop',timeout=95)
                 p.need(properties(unit)['ActiveState']=='inactive','fault_stop_unconfirmed')
                 if fault=='directory_stop': require_window(root,due,125)
-            elif fault=='broker_pause':
+            elif fault in ('broker_pause','control_pause'):
                 expected=expected_processes(plan,host,fault)[unit]
                 p.need(process(unit)==expected,'pause_process_changed')
                 receipt(root,'pause-intent',{'process':expected})
@@ -424,9 +424,10 @@ def recover(plan,fault,watchdog=False):
                             (not confirmed_stop or int(recovered['start'])>int(old['start']))): break
                     except (ValueError,OSError): pass
                     time.sleep(remaining(.1))
-            elif fault=='broker_pause':
+            elif fault in ('broker_pause','control_pause'):
                 old=expected_processes(plan,host,fault)[unit]; p.need(process(unit)==old,'paused_process_replaced')
                 os.kill(int(old['pid']),signal.SIGCONT); wait_state(old['pid'],False); recovered=process(unit)
+                p.need(recovered==old,'continued_process_changed')
             else:
                 table=nft_table(plan['operationId']); counters=None
                 if table is not None:
@@ -548,6 +549,16 @@ def execute(payload):
     with locked():
         result={'operationId':plan['operationId'],'fault':fault,'receipts':{v.stem:p.decode(read(v)) for v in root.glob('*.json')}}
         result['watchdogState']=dict(line.split('=',1) for line in run(['systemctl','show',timer_name(plan,fault)+'.service','--property=ActiveState','--property=Result'],'watchdog_status').decode().splitlines())
+        if fault=='control_pause':
+            target_pins(plan,fault)
+            current=expected_processes(plan,host,fault)[p.FAULTS[fault]['unit']]
+            p.need(process(p.FAULTS[fault]['unit'])==current,'paused_process_replaced')
+            restored=result['receipts'].get('restored')
+            if restored is not None:
+                p.need(restored.get('operationId')==plan['operationId'] and restored.get('fault')==fault and
+                       restored.get('restored') is True and restored.get('process')==current,'control_restore_receipt_changed')
+            wait_state(current['pid'],restored is None)
+            result['paused']=restored is None
         if fault.startswith('database_'):
             table=nft_table(plan['operationId'])
             result['counter']=validate_table(table,plan,fault) if table is not None else None
