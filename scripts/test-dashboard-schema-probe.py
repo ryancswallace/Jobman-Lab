@@ -41,6 +41,16 @@ class SchemaProbeTests(unittest.TestCase):
         patched=patch.object(g.g,'put',side_effect=lambda path,raw,*args,**kwargs:original(path,raw,os.getuid(),os.getgid()))
         patched.start();self.addCleanup(patched.stop)
 
+    def test_two_control_loopbacks_remain_unique_and_source_qualified(self):
+        _,install=t.fixture_v3();first=install['configs']['api']['controls'][0]
+        second=copy.deepcopy(first);second['id']='72000000-0000-4000-8000-000000000002';second['instanceId']='a4f0e2ab-7323-4c90-9510-1f073c660f06'
+        install['configs']['api']['controls']=[first,second]
+        changed=p.configs(install,'upgrade')['api']['controls']
+        self.assertEqual([x['origin'] for x in changed],['https://127.0.0.1:48445','https://127.0.0.1:48446'])
+        for original,actual in zip(install['configs']['api']['controls'],changed):
+            self.assertEqual({k:v for k,v in original.items() if k!='origin'},{k:v for k,v in actual.items() if k!='origin'})
+        self.assertEqual(first['origin'],install['configs']['api']['controls'][0]['origin'])
+
     def test_v2_closed_install_uses_its_uid_and_release_scope(self):
         q,install=t.fixture_v2();configs=p.configs(install,'upgrade')
         self.assertTrue(configs['api']['webRoot'].startswith(q.RELEASES+'/'))
@@ -86,7 +96,7 @@ class SchemaProbeTests(unittest.TestCase):
         self.assertEqual(plan['configs']['worker']['components'],['retention'])
         self.assertEqual(plan['configs']['worker']['controls'],[])
         self.assertNotIn('notifications',plan['configs']['worker'])
-        self.assertTrue(all(c['origin']=='https://127.0.0.1:48445' for c in plan['configs']['api']['controls']))
+        self.assertEqual([c['origin'] for c in plan['configs']['api']['controls']],['https://127.0.0.1:'+str(48445+i) for i in range(len(plan['configs']['api']['controls']))])
         self.assertEqual(plan['configs']['api']['listen'],'127.0.0.1:48444')
         self.assertNotIn('reports',plan['configs']['api'])
 

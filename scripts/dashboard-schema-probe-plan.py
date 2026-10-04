@@ -62,7 +62,8 @@ def configs(install,selected):
     # No real source/identity request is needed to check the ledger. If the
     # binary incorrectly continues, these endpoints cannot reach a Lab source.
     api['oidc']['issuer']='https://127.0.0.1:48445'
-    for control in api['controls']:control['origin']='https://127.0.0.1:48445'
+    for index,control in enumerate(api['controls']):
+        control['origin']='https://127.0.0.1:'+str(48445+index)
     for key in ('reports','logBrokers','logMappings','logCursorKeyFile'):api.pop(key,None)
     api['observability']={'socketPath':RUN['api']+'/observe.sock'}
     worker={'configurationRevision':1,'databaseURLFile':ROOTS['worker']+'/database-url',

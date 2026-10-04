@@ -15,6 +15,8 @@ No new systemd unit or source registration is created. Probe configuration roots
 are `/etc/jobman-dashboard-schema-probe-{api,worker,operator}-lab`, with separate
 API/worker socket parents under `/run/jobman-dashboard-schema-probe-*-lab`.
 The API binds only loopback127.0.0.1:48444 if it incorrectly gets that far.
+Source origins remain unique: two sources use ports48445 and48446, preserving
+their source-qualified IDs/scopes while disabling access to actual Controls.
 
 ## Evidence required before preparation
 
@@ -45,7 +47,8 @@ continuation option. This does not rerun identity adoption or retirement.
 No source or broker request is needed. The worker configuration is retention-only,
 with no source, broker, APNs or application-key credentials. The API configuration
 retains its local file references, removes reports and remote logs, and points
-its source and OIDC endpoints to unused loopback48445. The existing certificate
+its source endpoints to distinct loopback ports48445 onward and its OIDC
+endpoint to loopback48445. The existing certificate
 still identifies the unchanged `dashboard.lab.test` public hostname. Local
 `check-config` must pass before the negative test. The product must reject the
 schema before any listener or background work starts; an unrelated configuration,
