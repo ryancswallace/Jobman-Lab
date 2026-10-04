@@ -71,7 +71,9 @@ class PlanTests(unittest.TestCase):
         plan=baseline('database')
         for fault in plan['faults']:
             batch=p.decode(p.firewall_batch(OP,fault))
-            self.assertEqual([list(v) for v in batch['nftables']],[['create']]*3)
+            self.assertEqual([list(v) for v in batch['nftables']],[['create'],['create'],['add']])
+            self.assertEqual(batch['nftables'][2]['add']['rule']['expr'][-2],{'counter':{'packets':0,'bytes':0}})
+            self.assertEqual(g.normalize_nft([next(iter(v.values())) for v in batch['nftables']]),p.firewall_elements(OP,fault))
             g.validate_table(table(plan,fault,5),plan,fault)
             for path in ('uid','destination','port','rule','chain'):
                 bad=table(plan,fault)

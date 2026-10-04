@@ -130,6 +130,11 @@ def firewall_elements(operation, fault):
 
 
 def firewall_batch(operation, fault):
-    # libnftables JSON input, one atomic exclusive-create transaction. No broad
-    # flush or existing table modification is part of the accepted vocabulary.
-    return encoded({'nftables': [{'create': item} for item in firewall_elements(operation, fault)]})
+    # libnftables permits create for tables/chains, but rules require add.
+    # Exclusive creation of the enclosing table in this SAME atomic batch
+    # prevents appending to any existing table or duplicating a prior rule.
+    table, chain, rule = firewall_elements(operation, fault)
+    # Input needs an explicit anonymous counter; the read-only semantic form
+    # omits changing values so recovery can validate accumulated counters.
+    rule['rule']['expr'][-2]['counter'] = {'packets': 0, 'bytes': 0}
+    return encoded({'nftables': [{'create': table}, {'create': chain}, {'add': rule}]})
