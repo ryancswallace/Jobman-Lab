@@ -75,7 +75,7 @@ def required(root,phase,profile):
  elif phase.startswith('runtime-'):base+=['trust-primary','trust-secondary']
  elif phase in ('restart-api','restart-broker'):base+=['runtime-storage','runtime-broker']
  else:base+=['restart-api','restart-broker','restart-worker'] if phase!='restart-worker' else ['restart-api','restart-broker']
- if phase in ('recovery-step','recovery-reconcile','recovery-apply'):base+=['recovery-plan-'+profile]
+ if phase in ('recovery-step','recovery-reconcile','recovery-apply'):base+=['recovery-plan-primary','recovery-plan-secondary']
  if phase in ('resume','verify'):base+=['recovery-apply-primary','recovery-apply-secondary']
  if phase=='verify':base+=['resume']
  for name in base:c.need((root/(name+'.json')).exists(),'phase_predecessor_missing')
@@ -84,6 +84,23 @@ def required(root,phase,profile):
 def current_db(args,snapshot,plan,held=None,revision=7):
  value=remote(args.lab_root,'pg01',{'phase':'database'});a.validate_database(value,snapshot,plan,held,revision)
  return value
+
+
+def registry_revision_window(root,phase):
+ # Local readiness does not fetch a source. Scope-changed ingestion also
+ # pauses before network I/O; only a real checkpoint ends this transition.
+ if phase in ('restart-api','restart-broker','restart-worker','recovery-plan'):return (7,8)
+ # Rechecking a completed earlier phase after API restart must preserve the
+ # existing monotonic registry fence rather than demand the old revision.
+ return 8 if (root/'restart-api.json').exists() or phase.startswith('recovery-') or phase in ('resume','verify') else 7
+
+
+def planned_registry_fence(root,value,plan,completed_profile=None):
+ rows={row['deploymentId']:row for row in value['identities']}
+ for profile,p in a.PROFILES.items():
+  path=root/('recovery-plan-'+profile+'.json')
+  if path.exists():a.validate_recovery(get(root,'recovery-plan-'+profile),profile,plan)
+  if path.exists() or profile==completed_profile:c.need(rows[p['deployment']]['revision']==8,'checkpoint_registry_revision_required')
 
 
 def authority_proofs(lab,payload):
@@ -123,8 +140,8 @@ def execute(args):
   payload={'phase':phase,'apply':args.apply,'snapshot':snapshot,'handoffs':handoffs,'plan':plan,'implementationSHA256':impl,'executionId':operation}
   if phase!='hold':payload['held']=get(args.staging,'hold')
   if phase=='hold':c.need(0<=time.time()-snapshot['epoch']<=900,'snapshot_expired')
-  after_api=(args.staging/'restart-api.json').exists();revision=8 if after_api else ((7,8) if phase=='restart-api' else 7)
-  db=current_db(args,snapshot,plan,None,revision)
+  db=current_db(args,snapshot,plan,None,registry_revision_window(args.staging,phase))
+  planned_registry_fence(args.staging,db,plan)
   if phase=='verify':
    payload['resumed']=get(args.staging,'resume');a.resumed_hold(db['hold'],payload['resumed'])
   if phase=='hold':c.need(db['hold']==snapshot['database']['hold'] or (db['hold']['held'] is True and db['hold']['generation']==snapshot['database']['hold']['generation']+1),'hold_baseline_changed')
@@ -144,6 +161,9 @@ def execute(args):
   if phase=='verify':
    result={name:remote(args.lab_root,name,payload) for name in ('control01','storage01')};final=current_db(args,snapshot,plan,False,8);a.resumed_hold(final['hold'],payload['resumed']);put_record(args.staging,phase,result);return {'verified':True,'revision':8}
   result=remote(args.lab_root,host,payload)
+  if phase=='recovery-plan':
+   after=current_db(args,snapshot,plan,True,(7,8));planned_registry_fence(args.staging,after,plan,args.profile)
+   c.need(str(after['hold']['generation'])==payload['held']['generation'],'current_exact_hold_required')
   name=phase+'-'+args.profile if phase in ('recovery-plan','recovery-apply') else phase
   if phase=='recovery-reconcile':name='coverage-'+args.profile+'-'+c.sha(c.encoded(result))
   if phase=='recovery-step':name='recovery-step-'+args.profile+'-'+result['revision']

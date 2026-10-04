@@ -138,9 +138,16 @@ identities, and create `/etc/jobman-dashboard-operator-lab/scale-recovery.json`
 without modifying the previous recovery configuration. Restarts verify process
 identity, private readiness endpoints and revision8 metrics within a bounded
 wait. Worker ingestion then opens the normal scope-change gap on each feed.
+Local readiness does not perform a source request, and changed-scope ingestion
+pauses before fetching a checkpoint. Therefore the registry may still record
+revision7 during these restarts. Only verified source access advances it to8.
+The driver permits7 or8 during restart and initial planning, checks that each
+completed plan has advanced its own source to8, and requires both at8 before
+replay, reconciliation, apply, resume or final verification.
 
 ## Explicit recovery and coverage review
 
+First run `--phase recovery-plan` for **both** profiles before replaying either.
 For each profile, use the same common arguments plus `--profile primary` or
 `--profile secondary` and `--apply`:
 

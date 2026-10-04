@@ -49,6 +49,34 @@ def mutate_file(handoff,name,fn):
 
 
 class ScaleActivation(unittest.TestCase):
+ def test_source_registry_transition_requires_real_per_source_checkpoint(self):
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory).resolve()
+   for phase in ('restart-api','restart-broker','restart-worker','recovery-plan'):
+    self.assertEqual(host.registry_revision_window(root,phase),(7,8))
+   for phase in ('recovery-step','recovery-reconcile','recovery-apply','resume','verify'):
+    self.assertEqual(host.registry_revision_window(root,phase),8)
+   for phase in ('runtime-storage','directory-primary','trust-secondary'):
+    self.assertEqual(host.registry_revision_window(root,phase),7)
+   c.put(root/'restart-api.json',c.encoded({'role':'api','ready':True,'revision':8}))
+   for phase in ('runtime-storage','directory-primary','trust-secondary'):
+    self.assertEqual(host.registry_revision_window(root,phase),8)
+   for phase in ('restart-api','restart-broker','restart-worker','recovery-plan'):
+    self.assertEqual(host.registry_revision_window(root,phase),(7,8))
+  snapshot,handoffs=fixture();plan=a.draft(snapshot,handoffs)
+  value={'identities':[{'deploymentId':p['deployment'],'revision':7} for p in a.PROFILES.values()]}
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory).resolve();host.planned_registry_fence(root,value,plan)
+   with self.assertRaises(ValueError):host.planned_registry_fence(root,value,plan,'primary')
+   value['identities'][0]['revision']=8;host.planned_registry_fence(root,value,plan,'primary')
+   with self.assertRaises(ValueError):host.planned_registry_fence(root,value,plan,'secondary')
+   # An acknowledged source cannot regress to 7 while its sibling plans.
+   c.put(root/'recovery-plan-primary.json',c.encoded({'already':'validated'}))
+   with patch.object(a,'validate_recovery') as validate:
+    host.planned_registry_fence(root,value,plan);validate.assert_called_once()
+    value['identities'][0]['revision']=7
+    with self.assertRaises(ValueError):host.planned_registry_fence(root,value,plan)
+
  def test_additive_plan_preserves_recovery_authority_and_original_bytes(self):
   snapshot,handoffs=fixture();original=copy.deepcopy((snapshot,handoffs));plan=a.draft(snapshot,handoffs)
   self.assertEqual((snapshot,handoffs),original);self.assertFalse(plan['automaticFeedReset'])
@@ -106,6 +134,17 @@ class ScaleActivation(unittest.TestCase):
   with self.assertRaises(ValueError):a.validate_database(value,snapshot,plan,False)
   value['feeds'][0]['generation']=30;value['hold']['restoreRecordedThrough']='2026-10-04T00:00:00Z'
   with self.assertRaises(ValueError):a.validate_database(value,snapshot,plan,False)
+
+ def test_replay_and_apply_require_both_source_plans(self):
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory).resolve()
+   for name in ('hold','stop-worker','restart-api','restart-broker','restart-worker','recovery-plan-primary'):
+    c.put(root/(name+'.json'),c.encoded({}))
+   for phase in ('recovery-step','recovery-reconcile','recovery-apply'):
+    with self.assertRaises(ValueError):host.required(root,phase,'primary')
+   c.put(root/'recovery-plan-secondary.json',c.encoded({}))
+   for phase in ('recovery-step','recovery-reconcile','recovery-apply'):
+    for profile in a.PROFILES:host.required(root,phase,profile)
 
  def test_phase_order_keeps_directory_before_trust_and_explicit_resume(self):
   with tempfile.TemporaryDirectory() as directory:
