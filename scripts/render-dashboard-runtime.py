@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate only the explicitly scoped synthetic runtime configuration."""
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -45,7 +46,24 @@ def main(argv=None):
                 'audience': fixture['delegationAudience']}
 
     mappings = [{'deploymentId': DEPLOYMENT, 'targetGenerationId': entry['targetGenerationId'], 'storeName': 'lab-nfs', 'storeVersion': '1'} for entry in fixture['namespaces']]
-    app = {'configurationRevision': 1, 'publicOrigin': 'https://dashboard.lab.test:8443', 'listen': '10.77.0.10:8443',
+    diagnostic = STATE / 'diagnostic-fixture.json'
+    revision = 1
+    if diagnostic.exists():
+        if diagnostic.is_symlink() or not diagnostic.is_file() or diagnostic.stat().st_size > 65536:
+            raise RuntimeError('Supplemental diagnostic manifest must be bounded and regular')
+        spec = importlib.util.spec_from_file_location('diagnostic_fixture', Path(__file__).with_name('prepare-dashboard-diagnostic.py'))
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        supplement = json.loads(diagnostic.read_text())
+        helper.validate_fixture(supplement, fixture)
+        mappings.append({'deploymentId': DEPLOYMENT, 'targetGenerationId': supplement['targetGenerationId'], 'storeName': 'lab-nfs', 'storeVersion': '1'})
+        revision = 2
+    else:
+        for name in ['dashboard.json', 'broker.json']:
+            previous = RUNTIME / name
+            if previous.exists() and json.loads(previous.read_text()).get('configurationRevision', 0) > 1:
+                raise RuntimeError('Retained supplemental configuration requires its immutable manifest; refusing implicit downgrade')
+    app = {'configurationRevision': revision, 'publicOrigin': 'https://dashboard.lab.test:8443', 'listen': '10.77.0.10:8443',
            'webRoot': '/usr/local/share/jobman-dashboard-lab/web',
            'serverTLS': {'certificateFile': APP + '/server.crt', 'keyFile': APP + '/server.key'},
            'databaseURLFile': APP + '/database-url',
@@ -61,7 +79,7 @@ def main(argv=None):
                            'delegationKeyFile': APP + '/broker-signing-key.pem', 'delegationKeyId': 'synthetic-dashboard-broker-v1',
                            'serviceId': 'dashboard-lab-broker-caller', 'audience': 'urn:jobman:dashboard-lab:broker'}],
            'logMappings': [dict(value, brokerId='control01-nfs') for value in mappings]}
-    broker = {'configurationRevision': 1, 'publicOrigin': 'https://10.77.0.21:19443', 'listen': '10.77.0.21:19443',
+    broker = {'configurationRevision': revision, 'publicOrigin': 'https://10.77.0.21:19443', 'listen': '10.77.0.21:19443',
               'serverTLS': {'certificateFile': BROKER + '/server.crt', 'keyFile': BROKER + '/server.key'},
               'clientTrustRootsFile': CA, 'stateDirectory': '/var/lib/jobman-dashboard-broker-lab',
               'controls': [control(BROKER, 'broker')],

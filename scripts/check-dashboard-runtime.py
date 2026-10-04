@@ -75,9 +75,9 @@ assert config['reports']=={'objectRoot':str(root),'redactionFile':str(policy)}
         result = checks.ssh('storage01', 'sudo systemctl show jobman-dashboard-lab-app --property=ReadWritePaths --value')
         checks.require(result.returncode == 0 and result.stdout.strip() == '/var/lib/jobman-dashboard-app-lab/reports',
                        'Report service filesystem write allowance differs')
-        query = "SELECT name FROM dashboard_schema_migrations WHERE name='000005_report_queue.sql'; SELECT bool_and(has_table_privilege(current_user, table_name, privilege)) FROM (VALUES ('dashboard_report_tasks'),('dashboard_report_requesters'),('dashboard_report_idempotency')) AS tables(table_name) CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE')) AS rights(privilege);"
+        query = "SELECT name FROM dashboard_schema_migrations WHERE name='migrations/000005_report_queue.sql'; SELECT bool_and(has_table_privilege(current_user, table_name, privilege)) FROM (VALUES ('dashboard_report_tasks'),('dashboard_report_requesters'),('dashboard_report_idempotency')) AS tables(table_name) CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE')) AS rights(privilege);"
         result = checks.sql('jobman_dashboard', password, query)
-        checks.require(result.returncode == 0 and result.stdout.strip() == '000005_report_queue.sql\nt',
+        checks.require(result.returncode == 0 and result.stdout.strip() == 'migrations/000005_report_queue.sql\nt',
                        'Report migration or dedicated runtime table rights are absent')
         print('PASS: private report object root and synthetic policy; narrow service write allowance; report migration and runtime table rights')
 

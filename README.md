@@ -556,3 +556,73 @@ such a failure; do not delete the receipt or reset the fixture. Restoring the
 original synthetic revision is supported because this helper uses it only as
 a within-connection consistency value, not a claim about corporate AD USN
 monotonicity. Keep these results qualified as synthetic directory acceptance.
+
+### Supplemental diagnostic observation fixture
+
+`prepare-dashboard-diagnostic.py` adds one explicit synthetic diagnostic target,
+agent and failed-observation job to the existing operations namespace. It never
+launches a workload. Use an independently reviewed, CI-green exact Control/helper
+build with migration21 and upgrade the isolated source first with the existing
+`upgrade-dashboard-source.py` guard. Preserve the original source instance/epoch,
+fixture manifest, directory state and immutable log objects.
+
+```sh
+python3 scripts/prepare-dashboard-diagnostic.py /absolute/exact/control-helper-build \
+  --source-revision EXACT_CURRENT_CONTROL_COMMIT
+./scripts/configure-dashboard-runtime.sh /absolute/exact/dashboard-build --reports
+python3 scripts/check-dashboard-runtime.py --reports
+```
+
+The preparation wrapper verifies the helper digest, dedicated database and current
+source revision before creating the new target. It grants source UID21902 only
+traverse on the existing local spool parent while preserving its effective ACL
+mask, creates a separate UID21902-owned diagnostic spool, and grants Alice read
+access only to that new spool. It copies exactly the two declared immutable
+objects as Alice into the existing NFS root, retains reader inheritance and root
+squashing, verifies exact hashes as broker UID21901, and proves Bob cannot read
+the files directly. No original service is restarted by preparation.
+
+The separate `.lab/dashboard/diagnostic-fixture.json` is immutable public fixture
+metadata, without credentials or log bytes. Its exact generation adds one broker
+and Dashboard mapping at configuration revision2; the renderer refuses to drop
+that mapping if the supplemental manifest goes missing. A partial helper failure
+leaves a private recovery receipt and refuses automatic retry or reset. Inspect
+that receipt and the dedicated source state; never delete it merely to rerun.
+
+After exact report-runtime deployment, run Dashboard's opt-in
+`TestLabDeployedMetadataReport` for the original imported history and
+`TestLabDeployedReportsAndSealedCitations` for the supplemental observed failure
+with `JOBMAN_DASHBOARD_LAB_RUNTIME=1`, `JOBMAN_DASHBOARD_LAB_REPORTS=1` and the
+authorized `JOBMAN_DASHBOARD_LAB_ROOT`. These use real PKCE, Control, NFS broker,
+collector, deterministic engine, paired object storage and sealed citation APIs.
+The expected log-tail citation must mask the configured synthetic canary, retain
+exact byte offsets and preserve original NFS bytes; no model provider is invoked.
+This is synthetic observation acceptance, not actual subprocess/Slurm execution,
+corporate AD FS or managed iPhone delivery evidence.
+
+The 2026-10-04 diagnostic acceptance used exact Dashboard
+`d3b31b6a52cc99913231840f9826b4ca94a97e7b` and reviewed Control/helper
+`d332a2b569333ae8aed9c2fc9ebc648d8eb5ba4e`. Source migration21 preserved
+instance `e633cf92-258d-48ff-965a-fda88d68ef3a` and recovery epoch1;
+Dashboard migration5 and configuration revision2 were verified. The new
+operations target `51ff8e7f-8036-4956-a7f7-7b3e34b519ce` has generation
+`998935c0-f9e4-4297-8af1-05cb545bca73`; its synthetic observation job is
+`5959cbc6-b152-4546-982b-3f140d3149cc` at revision5. Both immutable NFS
+objects passed designated-reader checks and unrelated-user denial.
+
+The combined Go race run of metadata reports, redacted log reports/sealed
+citations, original Alice/Bob monitoring and target/partition acceptance passed
+in 6.764 seconds. It verified a recognized permission-message finding, same-length
+redaction and exact sealed citation offsets, unchanged original NFS bytes, report
+idempotency/history and current cross-account/namespace denials. Runtime checks
+confirmed private object/policy ownership, narrow service write allowance,
+report-table grants and continued original Control/Keycloak availability. These
+results remain synthetic observation and test-identity evidence as described above.
+
+Live web report rendering was not verified in this run: Chrome blocked the
+short-lived read-only loopback inspection proxy with `ERR_BLOCKED_BY_CLIENT`.
+The proxy held a real synthetic account token only in server memory, checked
+upstream Lab TLS, exposed only bounded GET routes and was shut down after the
+block. No browser security setting, host DNS or host CA trust was changed.
+The service-level report/citation checks above do not prove browser OIDC/session
+behavior or successful live browser rendering.
