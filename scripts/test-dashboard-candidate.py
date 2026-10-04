@@ -84,11 +84,116 @@ def fixture():
             'materials': {}, 'process': {'pid': '11', 'startedMonotonic': '100', 'bootId': '11111111-1111-4111-8111-111111111111',
                                          'uid': p.r.SPECS[role][2], 'binary': p.OLD_ROOT + '/bin/' + p.r.SPECS[role][5], 'binarySHA256': 'a' * 64},
             'capabilities': [{'deploymentId': c['id'], 'instanceId': c['expectedInstanceId'], 'recoveryEpoch': '1'} for c in sources] if role == 'worker' else []}
-    snapshot = {'format': 1, 'capturedAt': int(time.time()), 'hosts': hosts}
+    snapshot = {'format': 1, 'transition': p.TRANSITION, 'capturedAt': int(time.time()), 'hosts': hosts}
     files = {name: b'x' for name in ('bin/jobman-dashboard', 'bin/jobman-log-broker', 'build.json', 'SHA256SUMS', 'web/index.html')}
     metadata = {'revision': p.NEW, 'version': p.VERSION}
     plan = p.make(snapshot, metadata, files, ledger, {name: 'a' * 64 for name in p.FILES})
     return plan
+
+
+def select_all(name):
+    for module in (p, g.p, h.p): module.select_transition(name)
+
+
+def rc3_fixture():
+    select_all(p.DEFAULT_TRANSITION)
+    legacy = fixture()
+    old_root = p.OLD_ROOT
+    select_all('rc2-to-rc3')
+    snapshot = copy.deepcopy(legacy['snapshot']); snapshot['transition'] = p.TRANSITION
+    database = snapshot['hosts']['pg01']['database']; database['hold']['generation'] = '5'
+    scopes = {}
+    for index, row in enumerate(database['sources']):
+        scopes[row['deploymentId']] = ['73000000-0000-4000-8000-%012d' % (index * 100 + number) for number in range(1, (12, 7)[index] + 1)]
+        row['namespaceIds'] = scopes[row['deploymentId']]; row['configurationRevision'] = 8
+    for role in p.ROLES:
+        entry = snapshot['hosts'][p.r.SPECS[role][0]]['roles'][role]
+        config = p.decode(p.unb64(entry['config'])); config['configurationRevision'] = 8
+        for control in config['controls']: control['namespaceIds'] = scopes[control['id']]
+        if role == 'api': config['webRoot'] = p.OLD_ROOT + '/web'
+        entry['config'] = b64(p.encoded(config))
+        entry['unit'] = b64(p.unb64(entry['unit']).replace(old_root.encode(), p.OLD_ROOT.encode()))
+        entry['process']['binary'] = entry['process']['binary'].replace(old_root, p.OLD_ROOT)
+    files = {name: b'x' for name in legacy['candidateFiles']}
+    files['bin/jobman-dashboard'] = b'synthetic-approved-rc3-dashboard'
+    files['bin/jobman-log-broker'] = b'synthetic-approved-rc3-broker'
+    real_sha = p.sha
+    approved = {files[name]: digest for name, digest in p.TRANSITIONS[p.TRANSITION]['binaries'].items()}
+    def fixture_sha(raw): return approved[raw] if raw in approved else real_sha(raw)
+    with patch.object(p, 'sha', side_effect=fixture_sha):
+        plan = p.make(snapshot, {'revision': p.NEW, 'version': p.VERSION}, files, COMMITTED_LEDGER, {name: 'a'*64 for name in p.FILES})
+    return plan
+
+
+class CandidateRC3(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(select_all, p.DEFAULT_TRANSITION)
+        self.plan = rc3_fixture()
+
+    def test_allowlisted_profile_pins_payload_binary_scope_and_hold(self):
+        p.validate(self.plan)
+        self.assertEqual(p.NEW, '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2')
+        self.assertEqual(p.ARCHIVE, '179af3e6a60002fe3dcd630867e0911971461493b9aea291263d894a3fdaf705')
+        self.assertEqual(p.REVISION, 8); self.assertEqual(p.VERSION, 'v0.1.0-rc.3')
+        self.assertEqual([len(v['namespaceIds']) for v in self.plan['database']['sources']], [12, 7])
+        for role in p.ROLES:
+            old = p.unb64(self.plan['snapshot']['hosts'][p.r.SPECS[role][0]]['roles'][role]['config'])
+            new = p.unb64(self.plan['changes'][role]['afterConfig'])
+            if role != 'api': self.assertEqual(old, new)
+            else:
+                before, after = p.decode(old), p.decode(new)
+                self.assertEqual(before.pop('webRoot'), p.OLD_ROOT+'/web'); self.assertEqual(after.pop('webRoot'), p.NEW_ROOT+'/web'); self.assertEqual(before, after)
+
+    def test_other_candidate_scope_hold_epoch_or_binary_cannot_pass(self):
+        changes = [lambda v: v.update(transition='rc1-to-rc2'), lambda v: v.update(newRevision='a'*40),
+                   lambda v: v['candidateFiles']['bin/jobman-dashboard'].update(sha256='a'*64),
+                   lambda v: v['database']['hold'].update(held=True), lambda v: v['database']['hold'].update(generation='4'),
+                   lambda v: v['database']['hold'].update(suppressRecordedThrough='2026-10-04T00:00:00Z'),
+                   lambda v: v['database']['sources'][0]['namespaceIds'].pop(),
+                   lambda v: v['database']['sources'][1].update(recoveryEpoch='2')]
+        for change in changes:
+            value=copy.deepcopy(self.plan); change(value)
+            with self.subTest(change=change), self.assertRaises(ValueError): p.validate(value)
+        with self.assertRaisesRegex(ValueError, 'unsupported_candidate_transition'): p.select_transition('arbitrary-head')
+
+    def test_rc3_continuity_allows_only_monotonic_feed_progress(self):
+        current=copy.deepcopy(self.plan['database'])
+        for row in current['sources']: row['generation']=str(int(row['generation'])+2); row['lastPosition']=str(int(row['lastPosition'])+1)
+        g.database_continuity(self.plan['database'], current)
+        for field in ('generation','lastPosition'):
+            bad=copy.deepcopy(current); bad['sources'][0][field]='1'
+            with self.assertRaises(ValueError): g.database_continuity(self.plan['database'], bad)
+
+    def test_rc3_markers_preserve_previous_plan_evidence_under_shared_lock(self):
+        self.assertEqual(p.HOST_OPERATION_NAME, '.candidate-upgrade.rc2-to-rc3.operation.json')
+        self.assertEqual(g.p.OPERATION_NAME, 'operation-rc2-to-rc3')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve(); old=root/'operation.json'; old.write_bytes(b'old-rc2-evidence')
+            seen=[]
+            with patch.object(g,'BASE',root), patch.object(g,'create',side_effect=lambda path,*args: path.mkdir()), patch.object(g,'directory'), patch.object(g,'receipt',side_effect=lambda parent,name,value: seen.append((parent,name,value))):
+                result=g.intent({'plan':self.plan,'planSHA256':p.sha(p.encoded(self.plan)),'apply':True})
+            self.assertEqual(old.read_bytes(),b'old-rc2-evidence'); self.assertEqual(seen[0][1],'operation-rc2-to-rc3')
+            self.assertEqual(result,root/p.sha(p.encoded(self.plan)))
+        select_all(p.DEFAULT_TRANSITION)
+        self.assertEqual(p.OPERATION_NAME,'operation'); self.assertEqual(p.HOST_OPERATION_NAME,'.candidate-upgrade.operation.json'); self.assertEqual(p.REVISION,7)
+
+    def test_new_profile_preserves_both_privileged_recovery_configurations(self):
+        self.assertEqual(p.RECOVERIES,(p.LEGACY_RECOVERY,p.SCALE_RECOVERY))
+        read=[]
+        def fake_read(name,*args): read.append(str(name)); return p.encoded({'noPrivateFiles':True})
+        with patch.object(g.r,'read',side_effect=fake_read): result=g.operator_proofs()
+        self.assertEqual(set(result),{p.OPERATOR,p.LEGACY_RECOVERY,p.SCALE_RECOVERY}); self.assertEqual(set(read),set(result))
+
+    def test_bootstrap_selects_only_supplied_allowlisted_profile_before_actions(self):
+        names=('dashboard-multisource-runtime.py','dashboard-split-plan.py','dashboard-candidate-plan.py','dashboard-candidate-guest.py')
+        sources={name:(HERE/name).read_text() for name in names}
+        for transition,code in [('rc2-to-rc3','guest_host_identity'),('not-approved','unsupported_candidate_transition')]:
+            value={'transition':transition,'host':'not-a-lab-host','phase':'snapshot','_sources':sources,'_hashes':{n:p.sha(v.encode()) for n,v in sources.items()}}
+            result=subprocess.run([sys.executable,'-c',h.BOOTSTRAP],input=p.encoded(value),capture_output=True,timeout=5,check=True)
+            self.assertEqual(json.loads(result.stdout),{'ok':False,'code':code}); self.assertEqual(result.stderr,b'')
+        with patch.object(g.os,'geteuid') as identity:
+            with self.assertRaisesRegex(ValueError,'guest_transition_boundary'):g.execute({'transition':'rc1-to-rc2','host':'storage01','phase':'snapshot'})
+            identity.assert_not_called()
 
 
 class Candidate(unittest.TestCase):
@@ -273,7 +378,7 @@ class Candidate(unittest.TestCase):
     def test_reviewed_bootstrap_loads_without_guest_files_or_actions(self):
         names = ('dashboard-multisource-runtime.py', 'dashboard-split-plan.py', 'dashboard-candidate-plan.py', 'dashboard-candidate-guest.py')
         sources = {name: (HERE / name).read_text() for name in names}
-        raw = p.encoded({'host': 'not-a-lab-host', 'phase': 'snapshot', '_sources': sources, '_hashes': {n: p.sha(v.encode()) for n, v in sources.items()}})
+        raw = p.encoded({'transition': p.TRANSITION, 'host': 'not-a-lab-host', 'phase': 'snapshot', '_sources': sources, '_hashes': {n: p.sha(v.encode()) for n, v in sources.items()}})
         result = subprocess.run([sys.executable, '-c', h.BOOTSTRAP], input=raw, capture_output=True, timeout=5, check=True)
         self.assertEqual(json.loads(result.stdout), {'ok': False, 'code': 'guest_host_identity'})
         self.assertEqual(result.stderr, b'')

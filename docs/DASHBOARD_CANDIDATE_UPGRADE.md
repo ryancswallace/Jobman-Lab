@@ -1,4 +1,4 @@
-# Isolated Dashboard RC2 candidate upgrade
+# Isolated Dashboard candidate upgrades
 
 This narrowly scoped operator tool upgrades the synthetic Lab's existing split
 runtime from `b8f25afdd90f83b4602f32440a89e74dfa866b6c` to
@@ -9,7 +9,60 @@ freeze and other synthetic workload tests to finish before taking a live snapsho
 No release publication, production deployment, schema migration, source restart,
 feed recovery, or identity-policy change is part of this operation.
 
-## Exact change
+## RC3 transition after scale activation
+
+Use explicit `--transition rc2-to-rc3` on **every** command for the approved
+`42d153b4672aeb5cdb2d7395f052b8c6a095f5e1` →
+`9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2` transition (`v0.1.0-rc.3`).
+Omitting the option retains the original `rc1-to-rc2` default described below;
+that default cannot operate against configuration8. Both transitions are fixed
+allowlisted profiles; the CLI accepts no arbitrary revision or release path.
+
+RC3 requires the completed scale activation: configuration8, identical schema18
+ledger in both exact commits, both original source instances at epoch1, exactly
+12 primary and7 secondary namespaces with equal configuration/feed sets, active
+feeds with no open gaps/recoveries, and delivery hold=false/generation5 with no
+restore cutoff. Take the fresh snapshot only after scale resume and verification.
+The same requirements fence every subsequent read-only database check.
+
+The approved arm64 archive is
+`179af3e6a60002fe3dcd630867e0911971461493b9aea291263d894a3fdaf705`;
+Dashboard binary SHA256 is
+`e03612c5ab0384e8bac2150ae498fb4e0b6076c7644ec1120d3ae9f0572bf411`,
+and broker SHA256 is
+`18d77e81fa41662bfd6003a8722f4da2b76afc4e11de164417fa529bb5e0a096`.
+The planner validates all three pins and every internal archive checksum.
+Only the three unit release paths and API webRoot change to the9b release.
+Worker/broker config bytes, configuration8, keys, source registration and all
+19 namespace bindings remain unchanged. Both privileged recovery configurations
+(`multisource-recovery.json` and `scale-recovery.json`) plus the read-only operator
+configuration and their referenced material hashes remain unchanged. The active
+scale recovery config may retain its prior RC2 webRoot; this upgrade does not run
+recovery commands or alter that file.
+
+Example offline preparation, after an explicitly authorized read-only snapshot:
+
+```sh
+python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py snapshot \
+  --transition rc2-to-rc3 --lab-root /Users/rcw/home/code/jobman-lab \
+  --snapshot /absolute/private/rc3-snapshot.json
+python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py prepare \
+  --transition rc2-to-rc3 --snapshot /absolute/private/rc3-snapshot.json \
+  --candidate /absolute/private/jobman-dashboard_v0.1.0-rc.3_linux_arm64.tar.gz \
+  --dashboard-root /Users/rcw/home/code/jobman-dashboard \
+  --staging /absolute/private/rc3-prepared
+```
+
+The phases and bounded interrupted-operation handling below are unchanged; pass
+`--transition rc2-to-rc3` along with all normal plan/implementation arguments.
+Readiness must show revision8. RC3 uses separately named operation markers under
+the **same global locks**, preserving completed RC2 markers and backups. Marker
+selection is part of the selected profile and hashed plan; a second RC3 plan
+cannot overwrite the first. Old-profile retries fail the exact release, revision,
+scope and hold fences. Nothing removes prior operation evidence or automatically
+rolls back. Preparation, unit tests and artifact checks are not live acceptance.
+
+## Original RC2 change (default profile)
 
 The reviewed Linux ARM64 archive SHA256 is
 `1634cb3c44e9ca1b9321a42783be22fe7254cca8d0c235371de19db593dec85a`.

@@ -169,7 +169,7 @@ def capabilities(control):
 
 def operator_proofs():
     result = {}
-    for filename in (p.OPERATOR, p.RECOVERY):
+    for filename in (p.OPERATOR, *p.RECOVERIES):
         raw = r.read(filename, 0); config = p.decode(raw)
         materials = {}
         for name in refs(config):
@@ -178,7 +178,7 @@ def operator_proofs():
             mode = 0o600
             if name == p.CA: owner, mode = 0, 0o644
             legacy_dsn = '/etc/jobman-dashboard-app-lab/database-url'
-            if filename == p.RECOVERY and name == legacy_dsn and config.get('databaseURLFile') == legacy_dsn:
+            if filename in p.RECOVERIES and name == legacy_dsn and config.get('databaseURLFile') == legacy_dsn:
                 other_fields = dict(config); other_fields.pop('databaseURLFile')
                 r.need(legacy_dsn not in refs(other_fields), 'legacy_database_reference_reused')
                 owner, mode = 21903, 0o600
@@ -292,7 +292,7 @@ def intent(payload):
     r.need(digest == payload['planSHA256'] and payload['apply'] is True, 'explicit_plan_apply')
     root = BASE / digest
     global_intent = {'planSHA256': digest, 'implementationSHA256': plan['implementationSHA256']}
-    receipt(BASE, 'operation', global_intent)
+    receipt(BASE, p.OPERATION_NAME, global_intent)
     if not root.exists(): create(root)
     directory(root); receipt(root, 'intent', global_intent)
     return root
@@ -444,6 +444,7 @@ def verify(payload, root):
 
 def execute(payload):
     host, phase = payload['host'], payload['phase']
+    r.need(payload.get('transition') == p.TRANSITION, 'guest_transition_boundary')
     r.need(os.geteuid() == 0 and host in p.HOSTS and socket.gethostname().split('.')[0] == host, 'guest_host_identity')
     if phase == 'snapshot': return {'database': database()} if host == 'pg01' else host_snapshot(host)
     plan = payload['plan']; p.validate(plan)

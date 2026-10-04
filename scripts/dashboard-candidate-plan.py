@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure plan for the reviewed b8 runtime7 → RC2 binary/static-asset upgrade."""
+"""Pure plans for two explicit reviewed same-schema binary/static-asset upgrades."""
 import base64
 import copy
 import importlib.util
@@ -17,18 +17,45 @@ def load(name):
 split = load('dashboard-split-plan')
 r = load('dashboard-multisource-runtime')
 need, sha, encoded, decode = r.need, r.sha, r.encoded, split.decode
-OLD = 'b8f25afdd90f83b4602f32440a89e74dfa866b6c'
-NEW = '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1'
-ARCHIVE = '1634cb3c44e9ca1b9321a42783be22fe7254cca8d0c235371de19db593dec85a'
-OLD_ROOT = '/opt/jobman-dashboard-lab/releases/' + OLD
-NEW_ROOT = '/opt/jobman-dashboard-lab/releases/' + NEW
-VERSION = 'v0.1.0-rc.2'
-REVISION = 7
+DEFAULT_TRANSITION = 'rc1-to-rc2'
+TRANSITIONS = {
+    'rc1-to-rc2': {'old': 'b8f25afdd90f83b4602f32440a89e74dfa866b6c',
+        'new': '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1',
+        'archive': '1634cb3c44e9ca1b9321a42783be22fe7254cca8d0c235371de19db593dec85a',
+        'version': 'v0.1.0-rc.2', 'revision': 7},
+    'rc2-to-rc3': {'old': '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1',
+        'new': '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2',
+        'archive': '179af3e6a60002fe3dcd630867e0911971461493b9aea291263d894a3fdaf705',
+        'version': 'v0.1.0-rc.3', 'revision': 8,
+        'binaries': {'bin/jobman-dashboard': 'e03612c5ab0384e8bac2150ae498fb4e0b6076c7644ec1120d3ae9f0572bf411',
+                     'bin/jobman-log-broker': '18d77e81fa41662bfd6003a8722f4da2b76afc4e11de164417fa529bb5e0a096'}},
+}
 ROLES = ('broker', 'api', 'worker')
 HOSTS = ('pg01', 'control01', 'storage01')
 CA = '/etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt'
 OPERATOR = '/etc/jobman-dashboard-operator-lab/config.json'
-RECOVERY = '/etc/jobman-dashboard-operator-lab/multisource-recovery.json'
+LEGACY_RECOVERY = '/etc/jobman-dashboard-operator-lab/multisource-recovery.json'
+SCALE_RECOVERY = '/etc/jobman-dashboard-operator-lab/scale-recovery.json'
+
+
+def select_transition(name):
+    # A CLI invocation selects exactly one immutable allowlisted profile before
+    # planning or loading guest code. Arbitrary versions/paths are not accepted.
+    global TRANSITION, OLD, NEW, ARCHIVE, OLD_ROOT, NEW_ROOT, VERSION, REVISION
+    global RECOVERY, RECOVERIES, OPERATION_NAME, HOST_OPERATION_NAME
+    need(name in TRANSITIONS, 'unsupported_candidate_transition')
+    profile = TRANSITIONS[name]; TRANSITION = name
+    OLD, NEW, ARCHIVE = profile['old'], profile['new'], profile['archive']
+    VERSION, REVISION = profile['version'], profile['revision']
+    OLD_ROOT = '/opt/jobman-dashboard-lab/releases/' + OLD
+    NEW_ROOT = '/opt/jobman-dashboard-lab/releases/' + NEW
+    RECOVERY = LEGACY_RECOVERY if name == DEFAULT_TRANSITION else SCALE_RECOVERY
+    RECOVERIES = (LEGACY_RECOVERY,) if name == DEFAULT_TRANSITION else (LEGACY_RECOVERY, SCALE_RECOVERY)
+    OPERATION_NAME = 'operation' if name == DEFAULT_TRANSITION else 'operation-rc2-to-rc3'
+    HOST_OPERATION_NAME = '.candidate-upgrade.operation.json' if name == DEFAULT_TRANSITION else '.candidate-upgrade.rc2-to-rc3.operation.json'
+
+
+select_transition(DEFAULT_TRANSITION)
 SOURCE_IDS = {'72000000-0000-4000-8000-000000000001': 'e633cf92-258d-48ff-965a-fda88d68ef3a',
               '72000000-0000-4000-8000-000000000002': 'a4f0e2ab-7323-4c90-9510-1f073c660f06'}
 FILES = ('dashboard-candidate-plan.py', 'dashboard-candidate-guest.py', 'upgrade-dashboard-candidate.py',
@@ -112,6 +139,12 @@ def stable_database(value):
              type(source['unfinishedRecoveries']) is int and source['unfinishedRecoveries'] == 0, 'source_recovery_in_progress')
         need(isinstance(source['namespaceIds'], list) and 1 <= len(source['namespaceIds']) <= 320 and
              all(isinstance(n, str) and UUID.fullmatch(n) for n in source['namespaceIds']), 'database_namespace_shape')
+    if TRANSITION == 'rc2-to-rc3':
+        counts = dict(zip(SOURCE_IDS, (12, 7)))
+        need(all(len(source['namespaceIds']) == counts[source['deploymentId']] and
+                 len(set(source['namespaceIds'])) == counts[source['deploymentId']] and source['recoveryEpoch'] == '1'
+                 for source in value['sources']), 'rc3_scaled_source_scope')
+        need(value['hold'] == {'held': False, 'generation': '5', 'suppressRecordedThrough': None}, 'rc3_released_scale_hold')
     hold = value['hold']
     need(type(hold.get('held')) is bool and decimal(hold.get('generation'), positive=True) and
          (hold.get('suppressRecordedThrough') is None or isinstance(hold['suppressRecordedThrough'], str)), 'hold_shape')
@@ -119,10 +152,11 @@ def stable_database(value):
 
 
 def make(snapshot, metadata, files, ledger, implementation):
-    need(set(snapshot) == {'format', 'capturedAt', 'hosts'} and snapshot['format'] == 1 and type(snapshot['capturedAt']) is int,
+    need(set(snapshot) == {'format', 'transition', 'capturedAt', 'hosts'} and snapshot['format'] == 1 and snapshot['transition'] == TRANSITION and type(snapshot['capturedAt']) is int,
          'snapshot_shape')
     need(set(snapshot['hosts']) == set(HOSTS), 'snapshot_hosts')
     need(metadata['revision'] == NEW and metadata['version'] == VERSION, 'candidate_revision')
+    need(all(name in files and sha(files[name]) == digest for name, digest in TRANSITIONS[TRANSITION].get('binaries', {}).items()), 'candidate_binary_pin')
     need(set(implementation) == set(FILES) and all(HEX.fullmatch(v) for v in implementation.values()), 'implementation_manifest')
     database = stable_database(snapshot['hosts']['pg01']['database'])
     need(database['ledger'] == ledger, 'embedded_schema_baseline')
@@ -144,7 +178,7 @@ def make(snapshot, metadata, files, ledger, implementation):
         if role == 'worker': all_caps = value['capabilities']
     need(len(all_caps) == 2 and {c['deploymentId']: c['instanceId'] for c in all_caps} == SOURCE_IDS, 'source_capabilities')
     need(all(next(s for s in database['sources'] if s['deploymentId'] == c['deploymentId'])['recoveryEpoch'] == c['recoveryEpoch'] for c in all_caps), 'source_epoch')
-    return {'format': 1, 'scenario': 'dashboard-candidate-upgrade', 'synthetic': True, 'configurationRevision': REVISION,
+    return {'format': 1, 'transition': TRANSITION, 'scenario': 'dashboard-candidate-upgrade', 'synthetic': True, 'configurationRevision': REVISION,
             'oldRevision': OLD, 'newRevision': NEW, 'archiveSHA256': ARCHIVE, 'candidate': metadata,
             'candidateFiles': {name: {'sha256': sha(raw), 'bytes': len(raw), 'mode': 0o755 if name.startswith('bin/') else 0o644}
                                for name, raw in sorted(files.items())},
@@ -155,12 +189,14 @@ def make(snapshot, metadata, files, ledger, implementation):
 
 
 def validate(plan):
-    need(plan.get('format') == 1 and plan.get('scenario') == 'dashboard-candidate-upgrade' and plan.get('synthetic') is True and
+    need(plan.get('format') == 1 and plan.get('transition') == TRANSITION and plan.get('scenario') == 'dashboard-candidate-upgrade' and plan.get('synthetic') is True and
          plan.get('oldRevision') == OLD and plan.get('newRevision') == NEW and plan.get('archiveSHA256') == ARCHIVE and
          plan.get('configurationRevision') == REVISION and set(plan.get('changes', {})) == set(ROLES), 'plan_identity')
     need(set(plan['implementationSHA256']) == set(FILES) and all(HEX.fullmatch(v) for v in plan['implementationSHA256'].values()), 'plan_implementation')
     stable_database(plan['database'])
     inventory = plan['candidateFiles']
+    need(all(name in inventory and inventory[name]['sha256'] == digest for name, digest in TRANSITIONS[TRANSITION].get('binaries', {}).items()), 'candidate_binary_pin')
+    need(plan['snapshot'].get('transition') == TRANSITION, 'snapshot_transition')
     need(1 <= len(inventory) <= 4096 and {'bin/jobman-dashboard', 'bin/jobman-log-broker', 'build.json', 'SHA256SUMS', 'web/index.html'} <= set(inventory), 'candidate_inventory_required')
     total = 0
     for name, item in inventory.items():

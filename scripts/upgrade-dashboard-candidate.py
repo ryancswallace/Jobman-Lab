@@ -105,6 +105,7 @@ try:
  source=source.replace("split = load('dashboard-split-plan')", "split = modules['dashboard-split-plan.py']")
  source=source.replace("r = load('dashboard-multisource-runtime')", "r = modules['dashboard-multisource-runtime.py']")
  plan=types.ModuleType('candidate_plan');plan.modules=modules;exec(compile(source,'dashboard-candidate-plan.py','exec'),plan.__dict__)
+ plan.select_transition(payload['transition'])
  namespace={'__name__':'reviewed_guest','p':plan};exec(compile(sources['dashboard-candidate-guest.py'],'dashboard-candidate-guest.py','exec'),namespace)
  result=namespace['execute'](payload);print(json.dumps({'ok':True,'result':result},sort_keys=True))
 except Exception as error:
@@ -115,6 +116,7 @@ except Exception as error:
 
 def remote(lab, payload, hashes):
     r.need(payload.get('phase') in ('snapshot', 'preflight', 'stage', 'apply', 'restart', 'verify', 'database-check'), 'remote_phase_boundary')
+    r.need(payload.get('transition') == p.TRANSITION, 'remote_transition_boundary')
     names = ('dashboard-multisource-runtime.py', 'dashboard-split-plan.py', 'dashboard-candidate-plan.py', 'dashboard-candidate-guest.py')
     sources = {name: read(HERE / name, 1 << 20, False).decode() for name in names}
     r.need(all(r.sha(value.encode()) == hashes[name] for name, value in sources.items()), 'remote_implementation_drift')
@@ -157,7 +159,7 @@ def prepare(args):
                                       'candidateRevision': p.NEW, 'archiveSHA256': p.ARCHIVE,
                                       'changes': {role: {k: v for k, v in change.items() if not k.startswith('after') or k.endswith('SHA256')}
                                                   for role, change in plan['changes'].items()},
-                                      'configurationRevision': p.REVISION, 'applied': False})
+                                      'configurationRevision': p.REVISION, 'transition': p.TRANSITION, 'applied': False})
     return {'planSHA256': r.sha(r.encoded(plan)), 'implementationSHA256': r.sha(r.encoded(hashes)), 'prepared': True}
 
 
@@ -173,7 +175,7 @@ def load_plan(args):
 def payload_for(args, plan):
     host = r.SPECS[args.role][0] if args.phase == 'restart' else args.host
     r.need(host in p.HOSTS, 'phase_host_required')
-    return {'phase': args.phase, 'host': host, 'role': args.role, 'plan': plan, 'planSHA256': args.expected_plan_sha256,
+    return {'phase': args.phase, 'transition': p.TRANSITION, 'host': host, 'role': args.role, 'plan': plan, 'planSHA256': args.expected_plan_sha256,
             'apply': args.apply, 'observeOnly': args.observe_only}
 
 
@@ -222,7 +224,7 @@ def phase(args):
         payload['archive'] = base64.b64encode(archive).decode()
     # Complete read-only checks before marking any mutation uncertain.
     remote(args.lab_root, dict(payload, phase='database-check', host='pg01', archive=''), hashes)
-    global_path = args.lab_root / '.lab/dashboard/.candidate-upgrade.operation.json'
+    global_path = args.lab_root / '.lab/dashboard' / p.HOST_OPERATION_NAME
     save(global_path, {'planSHA256': args.expected_plan_sha256, 'implementationSHA256': args.expected_implementation_sha256})
     if not pending.exists() and not completed.exists():
         save(pending, {'planSHA256': args.expected_plan_sha256, 'phase': args.phase, 'host': host, 'role': args.role})
@@ -233,6 +235,7 @@ def phase(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('snapshot', 'prepare', 'preflight', 'stage', 'apply', 'restart', 'verify'))
+    parser.add_argument('--transition', choices=tuple(p.TRANSITIONS), default=p.DEFAULT_TRANSITION)
     parser.add_argument('--lab-root', type=Path)
     parser.add_argument('--staging', type=Path)
     parser.add_argument('--snapshot', type=Path)
@@ -246,6 +249,7 @@ def main():
     parser.add_argument('--observe-only', action='store_true')
     args = parser.parse_args()
     try:
+        p.select_transition(args.transition)
         if args.phase == 'prepare':
             r.need(all((args.snapshot, args.candidate, args.staging, args.dashboard_root)) and not args.apply, 'prepare_inputs')
             result = prepare(args)
@@ -254,8 +258,8 @@ def main():
             if args.phase == 'snapshot':
                 r.need(args.snapshot is not None and not args.apply and not args.snapshot.exists(), 'snapshot_output')
                 hashes = implementation(); started = int(time.time())
-                hosts = {host: remote(args.lab_root, {'host': host, 'phase': 'snapshot'}, hashes) for host in p.HOSTS}
-                result = {'format': 1, 'capturedAt': started, 'hosts': hosts}
+                hosts = {host: remote(args.lab_root, {'host': host, 'phase': 'snapshot', 'transition': p.TRANSITION}, hashes) for host in p.HOSTS}
+                result = {'format': 1, 'transition': p.TRANSITION, 'capturedAt': started, 'hosts': hosts}
                 write(args.snapshot, r.encoded(result)); result = {'snapshotSHA256': r.sha(r.encoded(result)), 'readOnly': True}
             else:
                 r.need(args.staging is not None and (args.phase != 'restart' or args.role is not None), 'phase_inputs')
