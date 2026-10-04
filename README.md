@@ -626,3 +626,37 @@ upstream Lab TLS, exposed only bounded GET routes and was shut down after the
 block. No browser security setting, host DNS or host CA trust was changed.
 The service-level report/citation checks above do not prove browser OIDC/session
 behavior or successful live browser rendering.
+
+### Dashboard notification acceptance mode
+
+First validate and explicitly add the narrow event-read operation to the existing
+isolated Control service registration. This preserves its keys, namespaces and
+all user grants. Check-only never changes a file or restarts a service; explicit
+apply reloads only the isolated Control and retains its prior public policy.
+
+```sh
+python3 scripts/configure-dashboard-event-source.py
+python3 scripts/configure-dashboard-event-source.py --apply
+```
+
+Then, after reviewing and verifying an exact notification-capable Dashboard build, use:
+
+```sh
+./scripts/configure-dashboard-runtime.sh /absolute/exact/build --reports --notifications
+python3 scripts/check-dashboard-runtime.py --reports --notifications
+```
+
+`--notifications` enables durable source-event processing, pending-rule
+activation, inbox evaluation and the synthetic `org.jobman.dashboard` sandbox
+device topic. It supplies no APNs provider credentials and does not establish
+Apple or real-phone delivery. Existing report configuration remains opt-in via
+`--reports`; both flags must be retained on subsequent upgrades once enabled.
+Rendering and guest provisioning reject implicit removal of event processing.
+The application configuration revision advances independently of the unchanged
+broker configuration. A retained restore hold is not cleared by this option;
+use the separately reviewed Dashboard event-recovery procedure.
+
+The readiness check verifies migration/runtime grants and initial source feed
+state. It does not replace authenticated rule/inbox, replay, authorization,
+multi-Control or workload acceptance. The original Control and Keycloak services
+remain outside this isolated runtime upgrade.

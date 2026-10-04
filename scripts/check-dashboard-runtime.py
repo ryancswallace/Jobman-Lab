@@ -16,6 +16,7 @@ spec.loader.exec_module(checks)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reports', action='store_true')
+    parser.add_argument('--notifications', action='store_true')
     args = parser.parse_args()
     for host, units in [
         ('control01', [('jobman-dashboard-lab-directory', 'jobman-dashboard-source', '21902'),
@@ -58,6 +59,19 @@ def main():
     checks.require(result.returncode == 0 and result.stdout.strip() == 'jobman_dashboard|jobman_dashboard\nt\nt|f|f|f',
                    'Runtime identity, TLS or migration-ledger rights are incorrect')
     print('PASS: runtime database TLS and SELECT-only migration ledger; transient DDL credential absent')
+    if args.notifications:
+        script = """import json
+from pathlib import Path
+config=json.loads(Path('/etc/jobman-dashboard-app-lab/config.json').read_text())
+assert config['events']=={'enabled':True,'deliveryHold':False}
+assert config['notifications']=={'deviceTopics':[{'topic':'org.jobman.dashboard','environment':'sandbox'}],'previousTokenKeys':[],'apns':[]}
+"""
+        result = checks.ssh('storage01', 'sudo -u jobman-dashboard-app python3 -', script)
+        checks.require(result.returncode == 0, 'Synthetic notification mode is absent or includes an unexpected provider')
+        query = "SELECT count(*) FROM dashboard_schema_migrations WHERE name IN ('migrations/000007_notification_rules.sql','migrations/000012_notification_evaluation.sql','migrations/000013_notification_device_revocations.sql','migrations/000014_notification_delivery.sql','migrations/000017_notification_retention.sql'); SELECT bool_and(has_table_privilege(current_user,table_name,privilege)) FROM (VALUES ('dashboard_notification_rules'),('dashboard_notification_inbox'),('dashboard_notification_deliveries'),('dashboard_notification_activation_work'),('dashboard_notification_retention_progress')) AS tables(table_name) CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE')) AS rights(privilege); SELECT count(*)=1 AND bool_and(status='active') FROM dashboard_event_feeds;"
+        result = checks.sql('jobman_dashboard', password, query)
+        checks.require(result.returncode == 0 and result.stdout.strip() == '5\nt\nt', 'Notification migrations, runtime grants or initial source feed are unavailable')
+        print('PASS: durable event/device mode, current runtime table grants and active source feed; no APNs provider is configured')
     if args.reports:
         script = """import json,stat
 from pathlib import Path

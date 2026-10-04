@@ -2,7 +2,9 @@
 set -euo pipefail
 lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$lab_root"
-[[ $# == 0 || ( $# == 1 && ${1-} == --reports ) ]] || { printf 'Usage: %s [--reports]\n' "$0" >&2; exit 1; }
+for option in "$@"; do
+  [[ "$option" == --reports || "$option" == --notifications ]] || { printf 'Usage: %s [--reports] [--notifications]\n' "$0" >&2; exit 1; }
+done
 umask 077
 runtime_root="$lab_root/.lab/dashboard/runtime"
 [[ -s .lab/dashboard/fixture-info.json && -s .lab/dashboard/oidc-public.json ]] || { printf 'Prepare the isolated Control source first.\n' >&2; exit 1; }

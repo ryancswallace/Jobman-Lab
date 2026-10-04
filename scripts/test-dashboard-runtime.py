@@ -57,6 +57,18 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(policy.read_bytes(), contents)
                 module.main([])
                 self.assertEqual(policy.read_bytes(), contents)  # Never remove retained private state.
+                module.main(['--reports', '--notifications'])
+                notified = json.loads((runtime / 'dashboard.json').read_text())
+                self.assertEqual(notified['configurationRevision'], 2)
+                self.assertEqual(notified['events'], {'enabled': True, 'deliveryHold': False})
+                self.assertEqual(notified['notifications'], {'deviceTopics': [{'topic': 'org.jobman.dashboard', 'environment': 'sandbox'}], 'previousTokenKeys': [], 'apns': []})
+                self.assertEqual((runtime / 'broker.json').read_bytes(), broker)
+                saved = (runtime / 'dashboard.json').read_bytes()
+                module.main(['--notifications', '--reports'])
+                self.assertEqual((runtime / 'dashboard.json').read_bytes(), saved)
+                with self.assertRaisesRegex(RuntimeError, 'already enabled'):
+                    module.main(['--reports'])
+                self.assertEqual((runtime / 'dashboard.json').read_bytes(), saved)
 
 
 if __name__ == '__main__':

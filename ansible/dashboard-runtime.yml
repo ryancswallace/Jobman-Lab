@@ -15,5 +15,6 @@
   vars:
     dashboard_runtime_root: "{{ lab_root }}/.lab/dashboard/runtime"
     dashboard_reports_enabled: false
+    dashboard_notifications_enabled: false
   roles:
     - dashboard_app

@@ -31,7 +31,7 @@
   ansible.builtin.slurp:
     src: /etc/jobman-dashboard-app-lab/config.json
   register: dashboard_existing_configuration_data
-  when: dashboard_existing_configuration.stat.exists and not dashboard_reports_enabled
+  when: dashboard_existing_configuration.stat.exists
   no_log: true
 
 - name: Refuse implicit removal of an enabled report configuration
@@ -40,6 +40,14 @@
       - (((dashboard_existing_configuration_data.content | b64decode | from_json).reports | default({})).objectRoot | default('')) == ''
     fail_msg: "Reports are already enabled. Reapply with --reports and a reviewed report-capable build."
   when: dashboard_existing_configuration.stat.exists and not dashboard_reports_enabled
+  no_log: true
+
+- name: Refuse implicit removal of enabled event and notification processing
+  ansible.builtin.assert:
+    that:
+      - not (((dashboard_existing_configuration_data.content | b64decode | from_json).events | default({})).enabled | default(false))
+    fail_msg: "Notifications are already enabled. Reapply with --notifications and a reviewed notification-capable build."
+  when: dashboard_existing_configuration.stat.exists and not dashboard_notifications_enabled
   no_log: true
 
 - name: Create private report object storage outside the served application tree

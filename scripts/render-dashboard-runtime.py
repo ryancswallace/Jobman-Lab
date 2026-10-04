@@ -25,7 +25,13 @@ def private_file(name, value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reports', action='store_true', help='Require a reviewed report-capable Dashboard build')
+    parser.add_argument('--notifications', action='store_true', help='Enable synthetic durable events and device registration, without APNs provider credentials')
     args = parser.parse_args(argv)
+    previous_app = RUNTIME / 'dashboard.json'
+    if previous_app.exists():
+        previous = json.loads(previous_app.read_text())
+        if previous.get('events', {}).get('enabled') and not args.notifications:
+            raise RuntimeError('Notifications are already enabled; reapply with --notifications to preserve durable processing')
     fixture = json.loads((STATE / 'fixture-info.json').read_text())
     oidc = json.loads((STATE / 'oidc-public.json').read_text())
     if fixture.get('synthetic') is not True or fixture['endpoint'] != 'https://10.77.0.21:18443' or len(fixture['namespaces']) != 2:
@@ -61,7 +67,8 @@ def main(argv=None):
     else:
         for name in ['dashboard.json', 'broker.json']:
             previous = RUNTIME / name
-            if previous.exists() and json.loads(previous.read_text()).get('configurationRevision', 0) > 1:
+            mapping_key = 'logMappings' if name == 'dashboard.json' else 'logRoots'
+            if previous.exists() and len(json.loads(previous.read_text()).get(mapping_key, [])) > 2:
                 raise RuntimeError('Retained supplemental configuration requires its immutable manifest; refusing implicit downgrade')
     app = {'configurationRevision': revision, 'publicOrigin': 'https://dashboard.lab.test:8443', 'listen': '10.77.0.10:8443',
            'webRoot': '/usr/local/share/jobman-dashboard-lab/web',
@@ -89,12 +96,19 @@ def main(argv=None):
                             'publicKeyFile': BROKER + '/dashboard-signing-public.pem', 'namespaceIds': namespaces}],
               'logRoots': [dict(value, root='/data/jobman/alice') for value in mappings],
               'readerConcurrency': 4, 'readerTimeoutMilliseconds': 3000}
+    if args.notifications:
+        app['configurationRevision'] = revision + 1
+        app['events'] = {'enabled': True, 'deliveryHold': False}
+        app['notifications'] = {'deviceTopics': [{'topic': 'org.jobman.dashboard', 'environment': 'sandbox'}],
+                                'previousTokenKeys': [], 'apns': []}
     if args.reports:
         app['reports'] = {'objectRoot': '/var/lib/jobman-dashboard-app-lab/reports',
                           'redactionFile': APP + '/redaction.json'}
         # Deliberately matches only a known synthetic fixture phrase. This is
         # acceptance configuration, never a production secret-detection policy.
         private_file('redaction.json', json.dumps({'values': ['metadata and byte delivery'], 'patterns': []}) + '\n')
+    if previous_app.exists() and json.loads(previous_app.read_text()).get('configurationRevision', 0) > app['configurationRevision']:
+        raise RuntimeError('Refusing to lower the retained application configuration revision')
     for name, value in [('dashboard.json', app), ('broker.json', broker)]:
         private_file(name, json.dumps(value, indent=2) + '\n')
     for role, key, database, output in [('jobman_dashboard', 'JOBMAN_LAB_DASHBOARD_PASSWORD', 'jobman_dashboard', 'database-url'),
