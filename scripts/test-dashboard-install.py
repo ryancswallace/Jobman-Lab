@@ -99,6 +99,38 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(value['attributes']['pkce.code.challenge.method'],'S256')
         self.assertEqual(len(value['protocolMappers']),2)
 
+    def test_explicit_mapper_defaults_and_strict_identity_verification(self):
+        secret='a'*64;client_id='11000000-0000-4000-8000-000000000001'
+        expected=p.client_spec(secret)
+        self.assertEqual(expected['protocolMappers'][0]['config']['userinfo.token.claim'],'false')
+        class Admin:
+            def __init__(self,value):self.value=value;self.secret=secret
+            def get(self,path):
+                if path.startswith('clients?'):return [{'id':client_id}]
+                if path=='clients/'+client_id:return self.value
+                if path=='clients/'+client_id+'/client-secret':return {'value':self.secret}
+                raise AssertionError(path)
+        valid=dict(copy.deepcopy(expected),id=client_id)
+        self.assertEqual(g.check_client(Admin(valid),secret),client_id)
+        def change(path,value):
+            row=copy.deepcopy(valid);cursor=row
+            for key in path[:-1]:cursor=cursor[key]
+            cursor[path[-1]]=value;return row
+        for key,value in [('userinfo.token.claim','true'),('userinfo.token.claim',False),('unknown','false')]:
+            with self.subTest(key=key,value=value),self.assertRaises(ValueError):
+                g.check_client(Admin(change(['protocolMappers',0,'config',key],value)),secret)
+        missing=copy.deepcopy(valid);del missing['protocolMappers'][0]['config']['userinfo.token.claim']
+        with self.assertRaises(ValueError):g.check_client(Admin(missing),secret)
+        for rows in ([valid['protocolMappers'][0],valid['protocolMappers'][0]],valid['protocolMappers']+[valid['protocolMappers'][0]]):
+            with self.assertRaises(ValueError):g.check_client(Admin(dict(valid,protocolMappers=rows)),secret)
+        for path,value in [(['enabled'],1),(['protocolMappers',0,'consentRequired'],0),(['id'],'other')]:
+            with self.assertRaises(ValueError):g.check_client(Admin(change(path,value)),secret)
+        admin=Admin(valid);admin.secret='b'*64
+        with self.assertRaises(ValueError):g.check_client(admin,secret)
+        disabled=dict(valid,enabled=False)
+        self.assertEqual(g.check_client(Admin(disabled),secret,retired=True),client_id)
+        with self.assertRaises(ValueError):g.check_client(Admin(valid),secret,retired=True)
+
     def test_unit_uses_actual_packaged_template_and_all_three_sites(self):
         source=Path('/Users/rcw/home/code/jobman-dashboard/deploy/systemd')
         # CI supplies --dashboard-root through the test environment; the checked

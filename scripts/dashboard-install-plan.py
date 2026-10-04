@@ -95,7 +95,8 @@ def client_spec(secret):
             'protocolMappers': [
                 {'name': 'dashboard-api-audience', 'protocol': 'openid-connect', 'protocolMapper': 'oidc-audience-mapper',
                  'consentRequired': False, 'config': {'included.client.audience': 'jobman-dashboard-api',
-                                                     'id.token.claim': 'false', 'access.token.claim': 'true'}},
+                                                     'id.token.claim': 'false', 'access.token.claim': 'true',
+                                                     'userinfo.token.claim': 'false'}},
                 {'name': 'dashboard-immutable-directory-guid', 'protocol': 'openid-connect',
                  'protocolMapper': 'oidc-usermodel-attribute-mapper', 'consentRequired': False,
                  'config': {'user.attribute': 'dashboard_directory_guid', 'claim.name': 'directory_guid',

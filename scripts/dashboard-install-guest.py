@@ -348,18 +348,29 @@ def stage(plan, payload):
 
 def check_client(admin, secret, retired=False):
     values = admin.get('clients?'+urllib.parse.urlencode({'clientId': p.CLIENT}))
-    p.need(len(values) == 1, 'client_identity_count')
-    value = admin.get('clients/'+values[0]['id']); expected = p.client_spec(secret)
+    p.need(isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict) and
+           isinstance(values[0].get('id'), str) and p.b.UUID.fullmatch(values[0]['id']), 'client_identity_count')
+    client_id = values[0]['id']; value = admin.get('clients/'+client_id); expected = p.client_spec(secret)
+    p.need(isinstance(value, dict) and value.get('id') == client_id, 'client_identity_changed')
     if retired: expected['enabled'] = False
     for key, wanted in expected.items():
         if key == 'secret': continue
         if key == 'protocolMappers':
-            current = {m['name']: {k:v for k,v in m.items() if k != 'id'} for m in value.get(key, [])}
-            p.need(current == {m['name']:m for m in wanted}, 'client_mappers_changed')
-        elif key == 'attributes': p.need(all(value.get(key, {}).get(k) == v for k,v in wanted.items()), 'client_attributes_changed')
-        else: p.need(value.get(key) == wanted, 'client_policy_changed')
-    p.need(admin.get('clients/'+value['id']+'/client-secret').get('value') == secret, 'client_secret_changed')
-    return value['id']
+            rows = value.get(key)
+            p.need(isinstance(rows, list) and len(rows) == len(wanted) and
+                   all(isinstance(m, dict) and isinstance(m.get('name'), str) for m in rows), 'client_mappers_changed')
+            current = {m['name']: {k:v for k,v in m.items() if k != 'id'} for m in rows}
+            # JSON encoding distinguishes false from 0; count equality also
+            # rejects duplicate names instead of silently keeping the last row.
+            p.need(len(current) == len(rows) and p.encoded(current) == p.encoded({m['name']:m for m in wanted}),
+                   'client_mappers_changed')
+        elif key == 'attributes':
+            actual = value.get(key)
+            p.need(isinstance(actual, dict) and all(type(actual.get(k)) is type(v) and actual.get(k) == v
+                                                   for k,v in wanted.items()), 'client_attributes_changed')
+        else: p.need(type(value.get(key)) is type(wanted) and value.get(key) == wanted, 'client_policy_changed')
+    p.need(admin.get('clients/'+client_id+'/client-secret').get('value') == secret, 'client_secret_changed')
+    return client_id
 
 
 def identity(plan, payload, retire=False):
