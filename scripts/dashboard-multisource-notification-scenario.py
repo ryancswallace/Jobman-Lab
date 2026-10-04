@@ -22,13 +22,14 @@ NAMESPACES = {'primary':'4156b832-9be8-40ff-a471-cb3061b6001d', 'secondary':'455
 SOURCE_SHA = '7faac82263dfa281d2fec7c3e8a52a55a121294e39e7e2d1706115751d4a2123'
 RECEIPT = re.compile('[0-9a-f]{32}\\Z')
 HOST_RECEIPT_PARENT = Path('/private/tmp')
-RETAINED_RECEIPTS = frozenset(('7ae1782e0d424061e8f056f7d4dde9bf','ecf5578b777a10c0a997e3a15218fcfb','63861951db782332bb16cc5f58a0a5d6','28bd57c3d4a8d292c37c0b1d1520c821','8281f530b049327cf138cfeabd32f268','e406f287dc15461d0d79351de1d5485c'))
+RETAINED_RECEIPTS = frozenset(('7ae1782e0d424061e8f056f7d4dde9bf','ecf5578b777a10c0a997e3a15218fcfb','63861951db782332bb16cc5f58a0a5d6','28bd57c3d4a8d292c37c0b1d1520c821','8281f530b049327cf138cfeabd32f268','e406f287dc15461d0d79351de1d5485c','bb399d49f2dc05be412399b5b474feb5','59373e309864f44603cc5fc183e61d4c'))
 
 
-STAGES=frozenset(('host_input','host_transport','host_decode','host_validate','host_receipt','guest_preflight','guest_material','helper_run','guest_cleanup','guest_postflight','guest_barrier'))
+STAGES=frozenset(('host_input','host_transport','host_decode','host_validate','host_receipt','guest_preflight','guest_material','helper_run','guest_cleanup','guest_postflight','guest_barrier','guest_barrier_input','guest_barrier_source','guest_barrier_dashboard','guest_barrier_result'))
 COMMON_REASONS=frozenset(('file_parent_alias','file_identity','file_changed','immutable_receipt_changed','directory_identity','duplicate_json_field','invalid_json_number','command_failed','command_deadline','command_output_bound','command_error_bound'))
 OS_REASONS={errno.EACCES:'os_permission_denied',errno.EPERM:'os_permission_denied',errno.ENOENT:'os_not_found',errno.ELOOP:'os_symlink',errno.ENOTDIR:'os_not_directory',errno.EISDIR:'os_is_directory',errno.EEXIST:'os_exists',errno.EBADF:'os_bad_descriptor',errno.EMFILE:'os_process_file_limit',errno.ENFILE:'os_system_file_limit',errno.ENOSPC:'os_no_space',errno.EDQUOT:'os_quota',errno.EIO:'os_io',errno.ESTALE:'os_stale',errno.EAGAIN:'os_would_block',errno.EINTR:'os_interrupted',errno.ETIMEDOUT:'os_timeout'}
-CODES=frozenset(('failed','invalid_result','common_failure','os_error'))|frozenset('common_'+v for v in COMMON_REASONS)|frozenset(OS_REASONS.values())
+PYTHON_REASONS={KeyError:'python_key_error',TypeError:'python_type_error',NameError:'python_name_error',ValueError:'python_value_error',AttributeError:'python_attribute_error',UnboundLocalError:'python_unbound_local_error'}
+CODES=frozenset(PYTHON_REASONS.values())|frozenset(('failed','invalid_result','common_failure','os_error'))|frozenset('common_'+v for v in COMMON_REASONS)|frozenset(OS_REASONS.values())
 COMMON_FAILURE_TYPE=None
 
 
@@ -38,7 +39,7 @@ def failure_code(error):
  if COMMON_FAILURE_TYPE is not None and type(error) is COMMON_FAILURE_TYPE:
   return 'common_'+error.code if error.code in COMMON_REASONS else 'common_failure'
  if isinstance(error,OSError):return OS_REASONS.get(error.errno,'os_error')
- return 'failed'
+ return PYTHON_REASONS.get(type(error),'failed')
 
 
 class ScenarioFailure(Exception):
@@ -168,15 +169,17 @@ def _guest(c,payload):
  profile=payload['profile'];c.need(profile in c.PROFILES and RECEIPT.fullmatch(payload['receipt']),'fixed_scenario')
  p=c.PROFILES[profile];action=payload['action'];c.need(action in ('prepare','complete','settled') and (action=='prepare' and payload['case'] is None or action!='prepare' and payload['case'] in ('first','stopped')),'scenario_action')
  if action=='settled':
-  fixture=validate_fixture(c,payload['fixture'],profile,payload['receipt']);event=validate_event(c,payload['event'],fixture,payload['case'])
+  with at_stage('guest_barrier_input'):
+   fixture=validate_fixture(c,payload['fixture'],profile,payload['receipt']);event=validate_event(c,payload['event'],fixture,payload['case'])
+   source_query,dashboard_query=barrier_queries(c,fixture,event)
   def sql(database,query):
    raw=c.run(['podman','exec','-i','--user','postgres','jobman-postgres','psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','jobman_control','-d',database],("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='500ms'; "+query+' ROLLBACK;').encode(),timeout=9,maximum=8192)
    return c.decode(raw)
-  source_query,dashboard_query=barrier_queries(c,fixture,event)
-  with at_stage('guest_barrier'):
-   source=sql(p['database'],source_query);dashboard=sql('jobman_dashboard',dashboard_query)
-  c.need(source['instance']==p['instance'] and source['epoch']=='1' and type(source['published']) is bool and type(dashboard['settled']) is bool,'barrier_source')
-  return {'receipt':payload['receipt'],'case':payload['case'],'deploymentId':p['deployment'],'controlInstanceId':p['instance'],'namespaceId':fixture['namespaceId'],'jobId':event['jobId'],'eventId':event['eventId'],'settled':source['published'] and dashboard['settled']}
+  with at_stage('guest_barrier_source'):source=sql(p['database'],source_query)
+  with at_stage('guest_barrier_dashboard'):dashboard=sql('jobman_dashboard',dashboard_query)
+  with at_stage('guest_barrier_result'):
+   c.need(source['instance']==p['instance'] and source['epoch']=='1' and type(source['published']) is bool and type(dashboard['settled']) is bool,'barrier_source')
+   return {'receipt':payload['receipt'],'case':payload['case'],'deploymentId':p['deployment'],'controlInstanceId':p['instance'],'namespaceId':fixture['namespaceId'],'jobId':event['jobId'],'eventId':event['eventId'],'settled':source['published'] and dashboard['settled']}
  directory_preflight(c,profile)
  before=process(c,profile);root=Path(p['root']);s=root.lstat();c.need(root.resolve()==root and stat.S_ISDIR(s.st_mode) and s.st_uid==p['uid'] and stat.S_IMODE(s.st_mode)==0o700,'source_root')
  for parent in (c.BINARY.parent,c.BINARY.parent.parent):c.directory(parent,0o755)
@@ -226,6 +229,10 @@ def host_receipt_directory(c,state,profile,receipt,action,explicit):
  return directory
 
 
+def guest_program(common_raw,wrapper_raw):
+ return "import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\nCOMMON_FAILURE_TYPE=c.Failure\ntry:\n result=guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))\nexcept Exception as error:\n result=failure_frame(error,'guest_preflight')\nprint(c.encoded(result).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(wrapper_raw.replace(b"if __name__ == '__main__':",b"if False:")).decode())
+
+
 def main():
  with at_stage('host_input'):return _main()
 
@@ -244,7 +251,7 @@ def _main():
  host='pg01' if args.action=='settled' else 'control01';connection=connections[host]
  # Both local dependencies and the transmitted program are exact reviewed bytes;
  # all dynamic selections travel as JSON stdin, never shell interpolation.
- code="import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\nCOMMON_FAILURE_TYPE=c.Failure\ntry:\n result=guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))\nexcept Exception as error:\n result=failure_frame(error,'guest_preflight')\nprint(c.encoded(result).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(Path(__file__).read_bytes().replace(b"if __name__ == '__main__':",b"if False:")).decode())
+ code=guest_program(common_raw,Path(__file__).read_bytes())
  with at_stage('host_transport'):
   raw=c.run(['ssh','-i',connection['ansible_ssh_private_key_file'],'-p',str(connection['ansible_port']),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={state / "known_hosts"}','-o','HostKeyAlgorithms=ssh-ed25519',f'{connection["ansible_user"]}@{connection["ansible_host"]}','sudo python3 -c '+shlex.quote(code)],c.encoded(payload),timeout=50,maximum=8192)
  result=checked_result(c,raw)

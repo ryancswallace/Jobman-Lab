@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline two-source receipt, barrier and fixed guest guards. No guest calls."""
 import copy
+import contextlib
+import io
 import importlib.util
 import os
 import tempfile
@@ -80,7 +82,7 @@ class TwoSourceNotificationTests(unittest.TestCase):
    process.assert_not_called()
 
  def test_barrier_boolean_is_not_a_timer_or_cross_database_write(self):
-  for published,settled in ((False,False),(True,False),(True,True)):
+  for published,settled in ((False,False),(False,True),(True,False),(True,True)):
    payload={'profile':'secondary','action':'settled','receipt':'a'*32,'case':'first','fixture':fixture('secondary'),'event':event('secondary')}
    results=[c.encoded({'published':published,'instance':c.PROFILES['secondary']['instance'],'epoch':'1'}),c.encoded({'settled':settled})]
    with patch.object(g.os,'geteuid',return_value=0),patch.object(g.sys,'platform','linux'),patch.object(g.os,'uname') as host,patch.object(c,'run',side_effect=results) as run:
@@ -181,14 +183,14 @@ class TwoSourceNotificationTests(unittest.TestCase):
     with h.at_stage(stage):raise ValueError(secret)
    except h.ScenarioFailure as error:
     frame=h.failure_frame(error)
-    self.assertEqual(frame,{'scenarioFailure':{'stage':stage,'code':'failed'}})
+    self.assertEqual(frame,{'scenarioFailure':{'stage':stage,'code':'python_value_error'}})
     self.assertNotIn(secret,str(frame));self.assertNotIn(secret,str(error))
     with self.assertRaises(h.ScenarioFailure) as parsed:h.checked_result(c,c.encoded(frame))
     self.assertEqual(parsed.exception.stage,stage)
   for bad in ({'scenarioFailure':{'stage':secret,'code':'failed'}},{'scenarioFailure':{'stage':'helper_run','code':secret}},{'scenarioFailure':{'stage':'helper_run','code':'failed','extra':secret}}):
    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_decode_invalid_result') as failure:h.checked_result(c,c.encoded(bad))
    self.assertNotIn(secret,str(failure.exception))
-  self.assertEqual(h.failure_frame(ValueError(secret)),{'scenarioFailure':{'stage':'host_input','code':'failed'}})
+  self.assertEqual(h.failure_frame(ValueError(secret)),{'scenarioFailure':{'stage':'host_input','code':'python_value_error'}})
 
  def test_finite_reasons_never_serialize_private_exception_material(self):
   canary='private-password-and-file-path'
@@ -209,6 +211,45 @@ class TwoSourceNotificationTests(unittest.TestCase):
   for value in h.CODES:
    with self.assertRaises(h.ScenarioFailure) as caught:h.checked_result(c,c.encoded({'scenarioFailure':{'stage':'host_input','code':value}}))
    self.assertEqual(caught.exception.code,value)
+
+ def test_builtin_exception_codes_are_exact_and_never_expose_values(self):
+  for kind,reason in h.PYTHON_REASONS.items():
+   error=kind('private-key-or-credential')
+   self.assertEqual(h.failure_code(error),reason)
+   self.assertNotIn('private',str(h.failure_frame(error)))
+   class Custom(kind):pass
+   self.assertEqual(h.failure_code(Custom('private')),'failed')
+
+ def test_actual_shared_global_bootstrap_pending_then_settled_and_diagnostics(self):
+  common_raw=(HERE/'dashboard-scale-source-common.py').read_bytes();program=h.guest_program(common_raw,(HERE/'dashboard-multisource-notification-scenario.py').read_bytes())
+  seam='COMMON_FAILURE_TYPE=c.Failure\ntry:'
+  self.assertEqual(program.count(seam),1)
+  program=program.replace(seam,'COMMON_FAILURE_TYPE=c.Failure\nc.run=TEST_READONLY_RUN\ntry:')
+  def invoke(profile,published,settled,failure=None):
+   payload={'profile':profile,'action':'settled','receipt':'a'*32,'case':'first','fixture':fixture(profile),'event':event(profile)}
+   values=[{'published':published,'instance':c.PROFILES[profile]['instance'],'epoch':'1'},{'settled':settled}]
+   if failure=='input':payload['event']['recordedAt']='private-invalid-time'
+   if failure=='result':values[0].pop('instance')
+   calls=[]
+   def readonly(args,raw,**kwargs):
+    index=len(calls);calls.append(args)
+    self.assertEqual(args[-1],[c.PROFILES[profile]['database'],'jobman_dashboard'][index])
+    self.assertTrue(raw.startswith(b'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'));self.assertTrue(raw.endswith(b'ROLLBACK;'))
+    self.assertEqual(kwargs,{'timeout':9,'maximum':8192})
+    if failure==['source','dashboard'][index]:raise KeyError('private-query-or-key')
+    return c.encoded(values[index])
+   output=io.StringIO()
+   with patch.object(os,'geteuid',return_value=0),patch.object(h.sys,'platform','linux'),patch.object(os,'uname',return_value=types.SimpleNamespace(nodename='pg01')),patch.object(h.sys,'stdin',types.SimpleNamespace(buffer=io.BytesIO(c.encoded(payload)))),contextlib.redirect_stdout(output):
+    exec(compile(program,'actual-wrapper-bootstrap','exec'),{'__name__':'__main__','TEST_READONLY_RUN':readonly})
+   self.assertNotIn('private-',output.getvalue())
+   return c.decode(output.getvalue()),calls
+  for profile in c.PROFILES:
+   for published,settled in ((False,False),(False,True),(True,False),(True,True)):
+    result,calls=invoke(profile,published,settled);self.assertEqual(result['settled'],published and settled);self.assertEqual(len(calls),2)
+    self.assertEqual(result['eventId'],event(profile)['eventId'])
+   for failure,reason,count in [('input','python_value_error',0),('source','python_key_error',1),('dashboard','python_key_error',2),('result','python_key_error',2)]:
+    result,calls=invoke(profile,False,False,failure)
+    self.assertEqual(result,{'scenarioFailure':{'stage':'guest_barrier_'+failure,'code':reason}});self.assertEqual(len(calls),count)
 
  def test_fast_new_receipt_reads_and_metadata_mismatch_are_distinct(self):
   with tempfile.TemporaryDirectory() as name:

@@ -15,7 +15,7 @@ It still rejects symlinks, multiple hard links, wrong owners/modes, changing fil
 and conflicting immutable bytes. It never chmods or adopts an existing root.
 
 This is a new-run path only. Explicit-root prepare refuses an existing receipt;
-all six retained v1/v2/v3 receipt IDs are excluded for every action. No prior
+all eight retained v1/v2/v3/v4 receipt IDs are excluded for every action. No prior
 receipt is copied from `.lab/dashboard/multisource-notifications`, no prior
 scenario is reopened, and no uncertain cancellation is retried. Preserve the
 original paths and all failed-attempt evidence. The legacy wrapper default remains
@@ -29,7 +29,7 @@ unknown. Choosing a separately reviewed receipt directory keeps the single-link
 safety check intact; it is not authorization to relax that check or repeat a
 failed scenario.
 
-The exact deployed test, mutation bounds, one-shot intent and six excluded IDs
+The exact deployed test, mutation bounds, one-shot intent and eight excluded IDs
 are recorded in Dashboard's `docs/LAB_MULTISOURCE_NOTIFICATIONS.md` and each frozen
 invocation manifest. No live invocation is performed by these offline tests:
 
