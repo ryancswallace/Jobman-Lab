@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import re
@@ -18,6 +19,32 @@ BINARY_ROOT = '/usr/local/libexec/jobman-dashboard-lab'
 FIXTURE_ROOT = '/etc/jobman-dashboard-lab/control-fixture'
 
 
+def configure_diagnostic_identity(raw, deployment):
+    """Preserve every existing byte; append only the approved optional source pin."""
+    import json
+    import re
+    if not deployment:
+        return raw
+    if deployment != '72000000-0000-4000-8000-000000000001' or len(raw) > 65536:
+        raise ValueError('Unexpected synthetic diagnostic identity or environment size')
+    values = {}
+    for line in raw.decode('utf-8').splitlines():
+        key, separator, encoded = line.partition('=')
+        if separator != '=' or not re.fullmatch('[A-Z][A-Z0-9_]*', key) or key in values:
+            raise ValueError('Malformed or duplicate source environment key')
+        value = json.loads(encoded)
+        if not isinstance(value, str):
+            raise ValueError('Source environment values must be strings')
+        values[key] = value
+    name = 'JOBMAN_CONTROL_DIAGNOSTIC_DEPLOYMENT_ID'
+    if name in values:
+        if values[name] != deployment:
+            raise ValueError('Existing diagnostic deployment identity differs')
+        return raw
+    separator = b'' if not raw or raw.endswith(b'\n') else b'\n'
+    return raw + separator + (name + '=' + json.dumps(deployment) + '\n').encode()
+
+
 def require_ok(result, message):
     checks.require(result.returncode == 0, message)
     return result
@@ -28,7 +55,10 @@ def main():
     parser.add_argument('build', type=Path)
     parser.add_argument('--from-revision', required=True)
     parser.add_argument('--expected-migration', required=True)
+    parser.add_argument('--diagnostic-deployment-id', default='')
     args = parser.parse_args()
+    configure_diagnostic_identity(b'', args.diagnostic_deployment_id)
+    diagnostic_source = inspect.getsource(configure_diagnostic_identity)
     root = args.build
     metadata = json.loads((root / 'build.json').read_text())
     revision = metadata.get('commit', metadata.get('revision', ''))
@@ -56,7 +86,7 @@ def main():
     checks.require(result.returncode == 0 and result.stdout.strip() == 'jobman_dashboard_control\n' + instance + '\nt\nt',
                    'Dedicated fixture database/instance/TLS/size preflight failed')
     staged = BINARY_ROOT + '/.control-upgrade-' + revision
-    preflight = '''import json,os,stat
+    preflight = diagnostic_source + '''import json,os,stat
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs
 root=Path(ROOT);binary_root=Path(BINARY_ROOT)
@@ -68,12 +98,13 @@ if not current.exists():current=binary_root/'build.json'
 assert json.loads(current.read_text())['revision']==FROM_REVISION,'Current source revision differs'
 path=root/'control.env';st=path.lstat()
 assert stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode)==0o600 and st.st_uid==21902
+configure_diagnostic_identity(path.read_bytes(),DIAGNOSTIC_PIN)
 values=dict((name,json.loads(value)) for name,value in (line.split('=',1) for line in path.read_text().splitlines()))
 url=urlparse(values['JOBMAN_CONTROL_DATABASE_URL'])
 assert url.scheme in ('postgres','postgresql') and url.username=='jobman_dashboard_control' and url.hostname=='10.77.0.20' and url.port==5432 and url.path=='/jobman_dashboard_control' and parse_qs(url.query).get('sslmode')==['verify-full']
 assert values['JOBMAN_CONTROL_DIRECTORY_CONFIG_FILE']==str(root/'directory.json') and values['JOBMAN_CONTROL_DIRECTORY_MODE']=='enforce' and values['JOBMAN_CONTROL_MIGRATE_ON_START']=='false'
 '''
-    values = {'ROOT': repr(FIXTURE_ROOT), 'BINARY_ROOT': repr(BINARY_ROOT), 'INSTANCE': repr(instance), 'FROM_REVISION': repr(args.from_revision)}
+    values = {'ROOT': repr(FIXTURE_ROOT), 'BINARY_ROOT': repr(BINARY_ROOT), 'INSTANCE': repr(instance), 'FROM_REVISION': repr(args.from_revision), 'DIAGNOSTIC_PIN': repr(args.diagnostic_deployment_id)}
     for key in sorted(values, key=len, reverse=True):
         preflight = preflight.replace(key, values[key])
     require_ok(checks.ssh('control01', 'sudo python3 -', preflight), 'Private source configuration preflight failed')
@@ -103,8 +134,21 @@ assert result.returncode==0,'Scoped preview migration failed; source remains sto
                         database='jobman_dashboard_control')
     checks.require(result.returncode == 0 and result.stdout.strip() == 'jobman_dashboard_control\n' + instance + '\n' + args.expected_migration,
                    'Post-migration ledger or source identity differs; isolated source remains stopped')
-    install = '''import json,os
+    install = diagnostic_source + '''import json,os,stat
 from pathlib import Path
+source_root=Path(FIXTURE_ROOT);environment=source_root/'control.env'
+st=environment.lstat()
+assert stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode)==0o600 and st.st_uid==21902
+original=environment.read_bytes();configured=configure_diagnostic_identity(original,DIAGNOSTIC_PIN)
+if configured!=original:
+ pending=source_root/'.control.env.pending'
+ fd=os.open(pending,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ with os.fdopen(fd,'wb') as stream:
+  os.fchown(stream.fileno(),21902,21902);stream.write(configured);stream.flush();os.fsync(stream.fileno())
+ os.replace(pending,environment)
+ fd=os.open(source_root,os.O_RDONLY|os.O_DIRECTORY)
+ try:os.fsync(fd)
+ finally:os.close(fd)
 root=Path(ROOT);binary=root/'jobman-control';backup=root/('jobman-control.before-'+FROM_REVISION)
 if not backup.exists():os.link(binary,backup)
 os.replace(STAGED,binary)
@@ -114,7 +158,7 @@ os.chmod(temporary,0o644);os.replace(temporary,current)
 fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY)
 try:os.fsync(fd)
 finally:os.close(fd)
-'''.replace('FROM_REVISION', repr(args.from_revision)).replace('ROOT', repr(BINARY_ROOT)).replace('STAGED', repr(staged)).replace('METADATA', repr({'revision': revision, 'sha256': digest, 'migration': args.expected_migration}))
+'''.replace('FROM_REVISION', repr(args.from_revision)).replace('FIXTURE_ROOT', repr(FIXTURE_ROOT)).replace('DIAGNOSTIC_PIN', repr(args.diagnostic_deployment_id)).replace('ROOT', repr(BINARY_ROOT)).replace('STAGED', repr(staged)).replace('METADATA', repr({'revision': revision, 'sha256': digest, 'migration': args.expected_migration}))
     require_ok(checks.ssh('control01', 'sudo python3 -', install), 'New source installation needs inspection')
     require_ok(checks.ssh('control01', 'sudo systemctl start jobman-dashboard-lab-control'), 'Upgraded isolated source did not start')
     result = require_ok(checks.ssh('control01', 'sudo systemctl is-active jobman-dashboard-lab-control jobman-dashboard-lab-directory jobman-control jobman-keycloak'), 'A required source/issuer unit is not active')

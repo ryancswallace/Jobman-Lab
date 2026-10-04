@@ -441,6 +441,14 @@ explicit upgrade helper instead of rerunning the original fixture bundle:
   --expected-migration <last-reviewed-migration-filename>
 ```
 
+To enable the reviewed shared-diagnostic snapshot source, include
+`--diagnostic-deployment-id 72000000-0000-4000-8000-000000000001` with that upgrade.
+Only this fixture's existing Dashboard registry identity is accepted. The helper
+preserves all existing private environment bytes, rejects a conflicting prior
+pin, and atomically adds the value with the same service owner and mode0600.
+Omitting the flag preserves any existing value. This pin identifies evidence;
+it does not expand service or user permissions.
+
 The supplied `build.json` must identify the Linux ARM64 revision and binary
 SHA-256. Preflight verifies the dedicated TLS-only `jobman_dashboard_control`
 database, unchanged source instance, small synthetic dataset, private source
@@ -470,6 +478,17 @@ verified TLS advertised `target-catalogs`. The isolated Control unit started at
 of 19:01:41 and 19:01:36 UTC respectively; the synthetic LDAP unit retained its
 2026-10-03 23:06:37 UTC start time. Dashboard runtime readiness passed afterward.
 These timestamps record this acceptance run, not a requirement for future runs.
+
+The subsequent reviewed upgrade installed diagnostic source
+`c01c3d16f9de40223e5d666dc436a97989d45cc2` with
+`000020_diagnostic_snapshots.sql` and the explicit deployment pin. Verified TLS
+advertised `shared-diagnostic-snapshots`; the same source instance and recovery
+epoch1 remained. The isolated source restarted at 2026-10-04 00:30:17 UTC while
+original services and synthetic LDAP kept the timestamps above. Dashboard
+`9748e683df3b64b425c39ff18d30052b8140693a` then passed actual Alice/Bob PKCE,
+monitoring, cross-owner NFS logs, workload/graph and target/partition acceptance
+under the Go race detector. This confirms the synthetic integration, not
+corporate AD FS or physical-device behavior.
 
 ### Reversible synthetic directory acceptance
 
