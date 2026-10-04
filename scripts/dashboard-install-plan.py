@@ -16,20 +16,21 @@ if 'b' not in globals():
 need, sha, encoded, decode = b.need, b.sha, b.encoded, b.decode
 FIX = '2e8f1b15c58889c52023d49d396fd600b31eecd2'
 SCOPE = globals().get('SCOPE', 'v1')
-need(SCOPE in ('v1','v2'), 'install_scope')
+need(SCOPE in ('v1','v2','v3'), 'install_scope')
 DATABASE = 'jobman_install_'+SCOPE
-ROLES = {role: ('jobman_install_' if SCOPE=='v1' else 'jobman_install_v2_')+role for role in ('ddl','api','worker','operator')}
-STEM = 'jobman-dashboard-install' + ('' if SCOPE=='v1' else '-v2')
+ROLES = {role: ('jobman_install_' if SCOPE=='v1' else 'jobman_install_'+SCOPE+'_')+role for role in ('ddl','api','worker','operator')}
+STEM = 'jobman-dashboard-install' + ('' if SCOPE=='v1' else '-'+SCOPE)
 ROOTS = {role: '/etc/'+STEM+'-'+role+'-lab' for role in ('api','worker','operator')}
 USERS = {'api': ('jobman-dash-install-api',21920), 'worker': ('jobman-dash-install-worker',21921)} if SCOPE=='v1' else {
-         'api': ('jobman-dash-install2-api',21923), 'worker': ('jobman-dash-install2-worker',21924)}
-READER = ('jobman-dash-install-readers',21922) if SCOPE=='v1' else ('jobman-dash-install2-readers',21925)
+         'api': ('jobman-dash-install2-api',21923), 'worker': ('jobman-dash-install2-worker',21924)} if SCOPE=='v2' else {
+         'api': ('jobman-dash-install3-api',21926), 'worker': ('jobman-dash-install3-worker',21927)}
+READER = ('jobman-dash-install-readers',21922) if SCOPE=='v1' else ('jobman-dash-install2-readers',21925) if SCOPE=='v2' else ('jobman-dash-install3-readers',21928)
 UNITS = {role: STEM+'-'+role+'-lab' for role in USERS}
 REPORTS = '/var/lib/'+STEM+'-reports-lab'
 RELEASES = '/opt/'+STEM+'-lab/releases'
 OPERATIONS = '/var/lib/'+STEM+'-operations'
 CLIENT = 'jobman-dashboard-install-web-'+SCOPE
-PORT = 48443 if SCOPE=='v1' else 49443
+PORT = {'v1':48443,'v2':49443,'v3':50443}[SCOPE]
 ORIGIN = 'https://dashboard.lab.test:'+str(PORT)
 ISSUER = 'https://oidc.lab.test:8443/realms/jobman-lab'
 CA = '/etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt'
@@ -47,13 +48,18 @@ MAX_PACKAGE = 128 << 20
 
 
 def validate_previous(value,with_states=True):
-    need(isinstance(value,dict) and set(value)=={'plan','abortedReceipt'},'previous_attempt_shape')
+    return validate_previous_scope(value,'v2' if SCOPE=='v3' else 'v1',with_states)
+
+
+def validate_previous_scope(value,scope,with_states=True):
+    need(scope in ('v1','v2') and isinstance(value,dict) and set(value)=={'plan','abortedReceipt'},'previous_attempt_shape')
     old=value['plan']; proof=value['abortedReceipt']
-    need(isinstance(old,dict) and old.get('scope','v1')=='v1' and b.UUID.fullmatch(old['operationId']),
+    need(isinstance(old,dict) and old.get('scope','v1')==scope and b.UUID.fullmatch(old['operationId']),
          'previous_attempt_scope')
     fields={'format','scope','operationId','planSHA256','originalImplementationSHA256','stopSHA256',
             'retireSHA256','failureSHA256','failureLogSHA256','acceptanceStartedSHA256','accepted','aborted','states'}
-    need(isinstance(proof,dict) and set(proof)==fields and type(proof['format']) is int and proof['format']==1 and proof['scope']=='v1' and
+    if scope=='v2':fields |= {'failedPhase','selected','upgradeIntentSHA256','retainedBaselineSHA256','baselineRetained'}
+    need(isinstance(proof,dict) and set(proof)==fields and type(proof['format']) is int and proof['format']==1 and proof['scope']==scope and
          proof['operationId']==old['operationId'] and proof['accepted'] is False and proof['aborted'] is True,
          'previous_abort_receipt')
     need(all(isinstance(proof[k],str) and s.HEX.fullmatch(proof[k]) for k in fields if k.endswith('SHA256')) and
@@ -61,6 +67,17 @@ def validate_previous(value,with_states=True):
          proof['originalImplementationSHA256']==sha(encoded(old['implementationSHA256'])),'previous_abort_binding')
     need(isinstance(proof['states'],dict) and (not with_states or set(proof['states'])=={'storage01','control01','pg01'}),
          'previous_abort_states')
+    if scope=='v2':
+        need(proof['failedPhase']=='upgrade' and proof['selected']=='upgrade','previous_failed_phase')
+        retained=proof['baselineRetained']
+        need(isinstance(retained,dict) and set(retained)=={'databaseOID','reports','rules','retainedSHA256'} and
+             isinstance(retained['databaseOID'],str) and re.fullmatch('[1-9][0-9]{0,19}',retained['databaseOID']) and
+             type(retained['reports']) is int and 1<=retained['reports']<=4 and type(retained['rules']) is int and retained['rules']==1 and
+             isinstance(retained['retainedSHA256'],str) and s.HEX.fullmatch(retained['retainedSHA256']),'previous_baseline_state')
+        for host in ('storage01','control01','pg01'):
+            prior=old['snapshot'][host]['previousAttempt']
+            validate_previous_scope(prior,'v1')
+            need(prior==old['snapshot']['storage01']['previousAttempt'],'previous_attempt_differs')
     return value
 
 def release(candidate):
@@ -233,7 +250,8 @@ def unit(role, candidate, template):
     paths = [ROOTS[peer], ROOTS['operator'], *[v[0] for v in PRIMARY.values()], '/etc/jobman-dashboard-operator-lab',
              '/etc/jobman-dashboard-restore-api-lab', '/etc/jobman-dashboard-restore-worker-lab',
              '/etc/jobman-dashboard-restore-operator-lab', '/etc/jobman-log-broker']
-    if SCOPE=='v2': paths += ['/etc/jobman-dashboard-install-'+r+'-lab' for r in ('api','worker','operator')]
+    if SCOPE!='v1': paths += ['/etc/jobman-dashboard-install-'+r+'-lab' for r in ('api','worker','operator')]
+    if SCOPE=='v3': paths += ['/etc/jobman-dashboard-install-v2-'+r+'-lab' for r in ('api','worker','operator')]
     lines = ['InaccessiblePaths='+' '.join('-'+x for x in paths) if line.startswith('InaccessiblePaths=') else line for line in lines]
     # Limit only the new disposable service's resources; retain package hardening.
     pos = lines.index('[Install]')
@@ -258,12 +276,12 @@ def make(snapshot, candidates, units, hashes, operation, created, generated, gra
     need(set(generated) == {'auth', 'policy', 'cursor', 'web', 'ddl', 'api', 'worker', 'operator'} and
          all(s.HEX.fullmatch(v) for v in generated.values()), 'generated_secret_fingerprints')
     need(set(grants) == {'api', 'worker', 'operator'} and all(s.HEX.fullmatch(v) for v in grants.values()), 'grant_fingerprints')
-    if SCOPE=='v2':
+    if SCOPE!='v1':
         for host in snapshot:
             prior=snapshot[host].get('previousAttempt')
             validate_previous(prior)
             need(prior==snapshot['storage01']['previousAttempt'],'previous_attempt_differs')
-    return {**({'scope':'v2'} if SCOPE=='v2' else {}),'format': 1, 'synthetic': True, 'operationId': operation, 'createdAt': created, 'postFixRevision': FIX,
+    return {**({'scope':SCOPE} if SCOPE!='v1' else {}),'format': 1, 'synthetic': True, 'operationId': operation, 'createdAt': created, 'postFixRevision': FIX,
             'snapshot': snapshot, 'candidates': candidates, 'units': units, 'configs': configs_value, 'copies': copies,
             'generatedSHA256': generated, 'grantSHA256': grants, 'implementationSHA256': hashes,
             'forbidden': ['primary-mutation', 'restore-clone-mutation', 'source-enrollment', 'delivery', 'old-client-edit',

@@ -348,3 +348,31 @@ session/whole-scenario acceptance.
 The integration runner reports only fixed phase/error codes for recognized
 installer failures. Unknown, oversized or extra subprocess diagnostics stay
 unclassified; private stderr and exception values are not printed.
+
+### Finite v3 attempt after a failed transition
+
+`--scope v3` uses only the reviewed third resource set: PostgreSQL database
+`jobman_install_v3` and `jobman_install_v3_{ddl,api,worker,operator}` roles,
+API/worker UIDs 21926/21927, reader GID 21928, the
+`jobman-dashboard-install-v3` path/unit stem, port 50443, and confidential client
+`jobman-dashboard-install-web-v3`. The first fresh snapshot must still prove
+these names, IDs, paths, and port unused and satisfy the original capacity
+checks; selecting the profile does not prove availability. No arbitrary fourth
+profile or caller-chosen resource names are supported.
+
+The explicit previous-attempt input must contain the failed v2 plan and a
+separately reviewed read-only abort receipt. That receipt binds the original
+one-shot failure, stop/client-disable receipts, exact pending upgrade, and
+baseline retained-data digest. It says `accepted: false`. Its v2 plan carries
+the original v1 aborted proof. Every v3 snapshot and preservation check follows
+both prior scopes: v1 keeps its original no-transition condition; v2 must keep
+its exact admitted upgrade pending, no completed upgrade/rollback/retirement,
+RC5 configuration, stopped services, disabled client, and original report,
+preference, and rule data. Bounded whole-table, object, material, release,
+operation-tree, and identity digests pin those stopped states.
+
+Neither prior failed operation is resumed, completed, or rewritten. The new v3
+one-shot must prove the full fresh-install → compatible upgrade → rollback
+flow with the same active BFF session and retained data; partial post-failure
+checks cannot substitute for this acceptance. All guest provisioning and
+acceptance remain pending a reviewed concrete v3 snapshot/plan.

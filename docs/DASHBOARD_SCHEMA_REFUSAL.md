@@ -141,3 +141,10 @@ real bounded subprocess output and timeout handling plus fixed DB/HBA scopes,
 exact refusal classification, existing-pending refusal, observe-only behavior,
 empty-template drift, changed final proofs and actual bootstrap module isolation.
 Passing those checks is not deployed schema-refusal acceptance.
+
+The probe also accepts a completed finite v3 installation and derives only its
+UIDs 21926/21927, reader GID 21928, and v3 release root. The guest bootstrap
+retains both prior-scope modules so preservation still verifies failed v1 and
+v2. An aborted v2 receipt is never accepted as the prerequisite completed
+installation. The probe database, loopback endpoints, and refusal contract do
+not change.

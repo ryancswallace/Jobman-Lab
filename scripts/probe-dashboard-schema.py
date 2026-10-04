@@ -86,6 +86,8 @@ try:
  up=module('dashboard-control-upgrade-plan',{'b':b});u=module('dashboard-control-upgrade-guest',{'p':up,'f':f})
  install=value.get('install',value.get('plan',{}).get('install',{}))
  prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v1'});prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u})
+ if install.get('scope','v1')=='v3':
+  prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v2'});prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u,'prior_guest':prior_g})
  ip=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':install.get('scope','v1')});g=module('dashboard-install-guest',{'p':ip,'f':f,'u':u,'prior_guest':prior_g})
  p=module('dashboard-schema-probe-plan')
  if set(sources)!=set(p.FILES+p.INSTALL_FILES):raise ValueError()

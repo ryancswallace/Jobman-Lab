@@ -229,8 +229,20 @@ def retained_attempt(value,host,require_abort=True):
     p.validate_previous(value,with_states=require_abort)
     old=prior_guest; plan=value['plan']; proof=value['abortedReceipt']; old.p.validate(plan)
     root=old.operation(plan)
-    p.need(not (root/'upgrade.pending.json').exists() and not (root/'rollback.pending.json').exists(),
-           'previous_transition_admitted')
+    if old.p.SCOPE=='v1':
+        p.need(not (root/'upgrade.pending.json').exists() and not (root/'rollback.pending.json').exists(),
+               'previous_transition_admitted')
+    else:
+        p.need(old.p.SCOPE=='v2' and p.SCOPE=='v3','previous_attempt_scope')
+        old.retained_attempt(plan['snapshot'][host]['previousAttempt'],host)
+        p.need(not any((root/n).exists() for n in ('upgrade.json','rollback.pending.json','rollback.json','retired.json')),
+               'previous_transition_completed')
+        # Upgrade mutation is admitted only on storage01; no new receipt is made.
+        if host=='storage01':
+            raw=f.read(root/'upgrade.pending.json')
+            row=p.decode(raw)
+            p.need(p.sha(raw)==proof['upgradeIntentSHA256'] and row=={'operationId':plan['operationId'],
+                   'phase':'upgrade','planSHA256':proof['planSHA256']},'previous_upgrade_intent')
     result={'operationId':plan['operationId'],'operationTreeSHA256':old.tree(root)}
     if host=='storage01':
         raw=f.read(root/'stop.json')
@@ -238,7 +250,7 @@ def retained_attempt(value,host,require_abort=True):
         stopped_value=p.decode(raw)
         p.need(stopped_value.get('stopped') is True and stopped_value.get('completed') is True and
                stopped_value.get('operationId')==plan['operationId'],'previous_not_stopped')
-        old.stopped();old.own_configuration(plan,'baseline')
+        old.stopped();old.own_configuration(plan,'upgrade' if old.p.SCOPE=='v2' else 'baseline')
         result['trees']={str(path):old.tree(path) for path in [*old.ROOTS.values(),Path(old.p.REPORTS)]}
         result['units']={unit:f.properties(unit) for unit in old.p.UNITS.values()}
         for candidate in ('baseline','upgrade'):old.verify_release(plan,candidate)
@@ -256,7 +268,11 @@ def retained_attempt(value,host,require_abort=True):
     else:
         p.need(host=='pg01','previous_host')
         result['data']=old.data_state(plan)
-        p.need(result['data']['reports']==result['data']['rules']==0,'previous_failure_stage_changed')
+        if old.p.SCOPE=='v1':
+            p.need(result['data']['reports']==result['data']['rules']==0,'previous_failure_stage_changed')
+        else:
+            p.need({k:result['data'][k] for k in proof['baselineRetained']}==proof['baselineRetained'],
+                   'previous_baseline_changed')
         names=p.decode(old.sql("SELECT coalesce(json_agg(c.relname ORDER BY c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p');",old.p.DATABASE))
         p.need(1<=len(names)<=128 and all(p.re.fullmatch('dashboard_[a-z_]{1,80}',n) for n in names),'previous_table_names')
         selects=["SELECT '"+n+"' AS name,count(*) AS count,coalesce(sum(octet_length(to_jsonb(t)::text)),0) AS bytes,encode(sha256(convert_to(coalesce(string_agg(to_jsonb(t)::text,E'\\n' ORDER BY to_jsonb(t)::text),''),'UTF8')),'hex') AS digest FROM public."+n+' t' for n in names]
@@ -300,7 +316,7 @@ def snapshot(host, revision, previous=None):
 
 def preserved(plan, host):
     before = plan['snapshot'][host]
-    if p.SCOPE=='v2': retained_attempt(before['previousAttempt'],host)
+    if p.SCOPE!='v1': retained_attempt(before['previousAttempt'],host)
     if host in ('control01', 'storage01'):
         p.need(f.host_snapshot(host, before['preserved']['revision']) == before['preserved'], 'existing_runtime_changed')
         if host == 'storage01': p.need(restore_storage() == before['restore'], 'restore_storage_changed')
@@ -756,10 +772,10 @@ def execute(payload):
     p.need(host == payload['host'] and host in ('storage01','control01','pg01'), 'fixed_guest_host')
     with f.bounded(240 if phase in ('baseline','upgrade','rollback') else 150):
         if phase == 'prior-state':
-            p.need(p.SCOPE=='v1','prior_state_scope');return retained_attempt(payload['previousAttempt'],host,False)
+            p.need(p.SCOPE in ('v1','v3'),'prior_state_scope');return retained_attempt(payload['previousAttempt'],host,False)
         if phase == 'snapshot':
             previous=payload.get('previousAttempt')
-            if p.SCOPE=='v2': retained_attempt(previous,host)
+            if p.SCOPE!='v1': retained_attempt(previous,host)
             else: p.need(previous is None,'unexpected_previous_attempt')
             result=snapshot(host,payload['revision'])
             if previous: result['previousAttempt']=previous

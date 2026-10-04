@@ -46,10 +46,10 @@ def decode(raw):
 
 def install_resources(install):
     scope=install.get('scope','v1')
-    need(scope in ('v1','v2'),'install_scope')
-    return {'users':{'api':21920,'worker':21921} if scope=='v1' else {'api':21923,'worker':21924},
-            'reader':21922 if scope=='v1' else 21925,
-            'releases':'/opt/jobman-dashboard-install'+('' if scope=='v1' else '-v2')+'-lab/releases'}
+    need(scope in ('v1','v2','v3'),'install_scope')
+    return {'users':{'api':21920,'worker':21921} if scope=='v1' else {'api':21923,'worker':21924} if scope=='v2' else {'api':21926,'worker':21927},
+            'reader':{'v1':21922,'v2':21925,'v3':21928}[scope],
+            'releases':'/opt/jobman-dashboard-install'+('' if scope=='v1' else '-'+scope)+'-lab/releases'}
 
 def configs(install,selected):
     api=copy.deepcopy(install['configs']['api'])

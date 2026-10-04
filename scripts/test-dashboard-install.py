@@ -2,6 +2,9 @@
 """Offline regression tests; no SSH, database, identity or service invocation."""
 import base64
 import copy
+import contextlib
+import io
+import sys
 from contextlib import ExitStack
 import importlib.util
 import os
@@ -73,7 +76,63 @@ def fixture_v2():
         '11000000-0000-4000-8000-000000000002',old['createdAt'],old['generatedSHA256'],old['grantSHA256'])
     return scoped,value
 
+def aborted_fixture_v2():
+    _,plan=fixture_v2()
+    proof=dict(aborted_fixture()['abortedReceipt'],scope='v2',operationId=plan['operationId'],
+        planSHA256=p.sha(p.encoded(plan)),originalImplementationSHA256=p.sha(p.encoded(plan['implementationSHA256'])),
+        failedPhase='upgrade',selected='upgrade',upgradeIntentSHA256='a'*64,retainedBaselineSHA256='b'*64,
+        baselineRetained={'databaseOID':'42','reports':1,'rules':1,'retainedSHA256':'c'*64})
+    return {'plan':plan,'abortedReceipt':proof}
+
+
+def fixture_v3():
+    scoped=load('dashboard-install-plan',{'SCOPE':'v3'})
+    old=fixture();snap=copy.deepcopy(old['snapshot'])
+    for host in snap:snap[host]['previousAttempt']=aborted_fixture_v2()
+    value=scoped.make(snap,old['candidates'],old['units'],old['implementationSHA256'],
+        '11000000-0000-4000-8000-000000000003',old['createdAt'],old['generatedSHA256'],old['grantSHA256'])
+    return scoped,value
+
 class InstallTests(unittest.TestCase):
+    def test_finite_v3_requires_both_failed_attempts_and_disjoint_resources(self):
+        q,plan=fixture_v3();q.validate(plan)
+        self.assertEqual((q.DATABASE,q.PORT,q.CLIENT),('jobman_install_v3',50443,'jobman-dashboard-install-web-v3'))
+        self.assertEqual([v[1] for v in q.USERS.values()],[21926,21927]);self.assertEqual(q.READER[1],21928)
+        for other in (p,fixture_v2()[0]):
+            for attr in ('ROLES','ROOTS','UNITS'):self.assertFalse(set(getattr(q,attr).values())&set(getattr(other,attr).values()))
+            for attr in ('REPORTS','RELEASES','OPERATIONS'):self.assertNotEqual(getattr(q,attr),getattr(other,attr))
+        for mutate in (lambda v:v['abortedReceipt'].update(accepted=True),
+                       lambda v:v['abortedReceipt'].update(selected='baseline'),
+                       lambda v:v['abortedReceipt'].update(failedPhase='rollback'),
+                       lambda v:v['abortedReceipt'].update(extra=True),
+                       lambda v:v['abortedReceipt']['baselineRetained'].update(rules=True),
+                       lambda v:v['plan']['snapshot']['pg01']['previousAttempt']['abortedReceipt'].update(accepted=True)):
+            changed=copy.deepcopy(plan)
+            for host in changed['snapshot']:mutate(changed['snapshot'][host]['previousAttempt'])
+            with self.assertRaises((ValueError,KeyError)):q.validate(changed)
+        with self.assertRaises(ValueError):load('dashboard-install-plan',{'SCOPE':'v4'})
+
+    def test_v3_preserves_admitted_failed_v2_without_replaying_transition(self):
+        q,plan=fixture_v3();prior=plan['snapshot']['storage01']['previousAttempt'];priorplan=prior['plan']
+        q2,_=fixture_v2();events=[]
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp:
+            root=Path(tmp)
+            intent=p.encoded({'operationId':priorplan['operationId'],'phase':'upgrade','planSHA256':p.sha(p.encoded(priorplan))})
+            stopped=p.encoded({'completed':True,'stopped':True,'operationId':priorplan['operationId']})
+            (root/'upgrade.pending.json').write_bytes(intent);(root/'stop.json').write_bytes(stopped)
+            prior['abortedReceipt'].update(upgradeIntentSHA256=p.sha(intent),stopSHA256=p.sha(stopped))
+            old=SimpleNamespace(p=q2,operation=lambda _:root,tree=lambda _:'a'*64,ROOTS=g.ROOTS,
+                stopped=lambda:events.append('stopped'),own_configuration=lambda _,selected:events.append(selected),
+                verify_release=lambda *_:None,retained_attempt=lambda *_:events.append('v1'))
+            guest=load('dashboard-install-guest',{'p':q,'prior_guest':old})
+            with patch.object(guest.f,'read',side_effect=lambda path,**_:Path(path).read_bytes()),                 patch.object(guest.f,'properties',return_value={'MainPID':'0'}),patch.object(guest.f,'run') as run:
+                actual=guest.retained_attempt(prior,'storage01',False)
+                self.assertEqual(events,['v1','stopped','upgrade']);run.assert_not_called()
+                prior['abortedReceipt']['states']['storage01']=actual
+                self.assertEqual(guest.retained_attempt(prior,'storage01'),actual)
+                (root/'upgrade.json').write_bytes(b'{}')
+                with self.assertRaisesRegex(ValueError,'previous_transition_completed'):guest.retained_attempt(prior,'storage01')
+
     def test_finite_v2_scope_has_disjoint_resources_and_retains_v1(self):
         q,plan=fixture_v2();q.validate(plan)
         self.assertEqual(plan['scope'],'v2');self.assertEqual(q.DATABASE,'jobman_install_v2')
@@ -377,7 +436,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(wrong.read_bytes(),b'preserved')
 
     def test_runtime_parent_selection_is_exact_for_both_finite_scopes(self):
-        for scope in ('v1','v2'):
+        for scope in ('v1','v2','v3'):
             q=load('dashboard-install-plan',{'SCOPE':scope});guest=load('dashboard-install-guest',{'p':q})
             with patch.object(guest,'runtime_directory') as call:
                 guest.runtime_directories()
@@ -419,6 +478,24 @@ class InstallTests(unittest.TestCase):
             finish=stack.enter_context(patch.object(g,'finish'))
             with self.assertRaisesRegex(ValueError,'directory_identity'):g.activate(plan,'upgrade')
             self.assertFalse(any(args[:2]==['systemctl','start'] for args in calls));finish.assert_not_called()
+
+    def test_actual_v3_bootstrap_keeps_both_prior_scope_modules(self):
+        _,plan=fixture_v3()
+        sources={name:(HERE/name).read_text() for name in h.REMOTE_NAMES}
+        sources['dashboard-install-guest.py'] += """
+def execute(payload):
+    assert p.SCOPE=='v3' and prior_guest.p.SCOPE=='v2' and prior_guest.prior_guest.p.SCOPE=='v1'
+    old=prior_guest
+    old.p.validate(payload['prior']['plan'])
+    old.prior_guest.p.validate(payload['prior']['plan']['snapshot']['storage01']['previousAttempt']['plan'])
+    return {'scopes':['v3','v2','v1'],'accepted':False}
+"""
+        payload=p.encoded({'scope':'v3','prior':plan['snapshot']['storage01']['previousAttempt'],
+            '_sources':sources,'_hashes':{name:p.sha(raw.encode()) for name,raw in sources.items()}})
+        out=io.StringIO()
+        with patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(payload))),patch.object(sys,'stdout',out):
+            exec(compile(h.BOOTSTRAP,'actual-install-v3-bootstrap','exec'),{'__name__':'test'})
+        self.assertEqual(p.decode(out.getvalue()),{'ok':True,'result':{'scopes':['v3','v2','v1'],'accepted':False}})
 
     def test_bootstrap_compile_only(self):
         compile(h.BOOTSTRAP,'bootstrap','exec')

@@ -46,7 +46,7 @@ class SchemaProbeTests(unittest.TestCase):
         self.assertTrue(configs['api']['webRoot'].startswith(q.RELEASES+'/'))
         self.assertEqual(p.install_resources(install)['users'],{'api':21923,'worker':21924})
         self.assertEqual(p.install_resources(install)['reader'],21925)
-        for scope in ('v3',True):
+        for scope in ('v4',True):
             changed=copy.deepcopy(install);changed['scope']=scope
             with self.assertRaises(ValueError):p.install_resources(changed)
         guest=t.load('dashboard-install-guest',{'p':q})
@@ -60,6 +60,12 @@ class SchemaProbeTests(unittest.TestCase):
         self.assertEqual(owners[p.RUN['api']],21923);self.assertEqual(owners[p.RUN['worker']],21924)
         configs_written={str(call.args[0]):call.args[2] for call in put.call_args_list if str(call.args[0]).endswith('/config.json')}
         self.assertEqual(configs_written[p.ROOTS['api']+'/config.json'],21923)
+
+    def test_v3_schema_material_uses_finite_owner_and_release_root(self):
+        q,install=t.fixture_v3();value=p.install_resources(install)
+        self.assertEqual(value['users'],{'api':21926,'worker':21927});self.assertEqual(value['reader'],21928)
+        self.assertEqual(value['releases'],q.RELEASES)
+        self.assertTrue(p.configs(install,'upgrade')['api']['webRoot'].startswith(q.RELEASES+'/'))
 
     def test_actual_host_loader_selects_v2_from_pinned_install_plan(self):
         q,install=t.fixture_v2()
@@ -304,6 +310,22 @@ def execute(payload):
             with patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(payload))),patch.object(sys,'stdout',out):
                 exec(compile(h.BOOTSTRAP,'actual-v2-bootstrap','exec'),{'__name__':'test'})
         self.assertEqual(p.decode(out.getvalue()),{'ok':True,'result':{'preserved':True,'host':'storage01'}})
+
+    def test_actual_v3_schema_bootstrap_injects_both_prior_installations(self):
+        _,install=t.fixture_v3()
+        sources={name:(LAB/'scripts'/name).read_text() for name in p.INSTALL_FILES}
+        sources.update({name:(HERE/name).read_text() for name in p.FILES})
+        sources['dashboard-schema-probe-guest.py'] += """
+def execute(payload):
+    assert g.p.SCOPE=='v3' and g.prior_guest.p.SCOPE=='v2' and g.prior_guest.prior_guest.p.SCOPE=='v1'
+    g.p.validate(payload['install'])
+    return {'scopes':['v3','v2','v1'],'mutations':False}
+"""
+        payload=p.encoded({'install':install,'_sources':sources,'_hashes':{name:p.sha(raw.encode()) for name,raw in sources.items()}})
+        out=io.StringIO()
+        with patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(payload))),patch.object(sys,'stdout',out):
+            exec(compile(h.BOOTSTRAP,'actual-schema-v3-bootstrap','exec'),{'__name__':'test'})
+        self.assertEqual(p.decode(out.getvalue()),{'ok':True,'result':{'scopes':['v3','v2','v1'],'mutations':False}})
 
     def test_guest_bootstrap_loads_exact_independent_modules(self):
         sources={name:(LAB/'scripts'/name).read_text() for name in p.INSTALL_FILES}

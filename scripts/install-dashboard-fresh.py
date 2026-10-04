@@ -62,6 +62,8 @@ try:
  up=module('dashboard-control-upgrade-plan',{'b':b});u=module('dashboard-control-upgrade-guest',{'p':up,'f':f})
  prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v1'})
  prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u})
+ if value.get('scope','v1')=='v3':
+  prior_p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':'v2'});prior_g=module('dashboard-install-guest',{'p':prior_p,'f':f,'u':u,'prior_guest':prior_g})
  p=module('dashboard-install-plan',{'b':b,'s':s,'SCOPE':value.get('scope','v1')});g=module('dashboard-install-guest',{'p':p,'f':f,'u':u,'prior_guest':prior_g})
  result=g.execute(value);print(json.dumps({'ok':True,'result':result},sort_keys=True))
 except Exception as error:
@@ -143,7 +145,7 @@ def prepare(args):
     plan = p.make(p.decode(h.read(args.snapshot,8<<20)),candidates,units,hashes,str(uuid.uuid4()),int(time.time()),
                   {k:p.sha(v) for k,v in secrets.items()},{k:p.sha(v) for k,v in grants.items()})
     p.validate(plan)
-    if p.SCOPE=='v2':
+    if p.SCOPE!='v1':
         previous=previous_attempt(args)
         p.need(plan['snapshot']['storage01']['previousAttempt']==previous,'previous_attempt_changed')
         h.save(args.staging/'previous-attempt.json',previous)
@@ -160,7 +162,7 @@ def prepare(args):
 
 def load_plan(args):
     h.directory(args.staging); raw = h.read(args.staging/'plan.json',8<<20); plan = p.decode(raw); p.validate(plan)
-    if p.SCOPE=='v2':
+    if p.SCOPE!='v1':
         previous=previous_attempt(args)
         p.need(plan['snapshot']['storage01']['previousAttempt']==previous,'previous_attempt_changed')
         p.need(p.decode(h.read(args.staging/'previous-attempt.json',8<<20))==previous,'previous_attempt_changed')
@@ -255,7 +257,7 @@ def main():
     parser.add_argument('--lab-root',type=Path,required=True)
     for name in ('staging','snapshot','output','dashboard-root','baseline-archive','upgrade-archive','reviewed-pair'):
         parser.add_argument('--'+name,type=Path)
-    parser.add_argument('--scope',choices=('v1','v2'),default='v1')
+    parser.add_argument('--scope',choices=('v1','v2','v3'),default='v1')
     parser.add_argument('--previous-attempt',type=Path); parser.add_argument('--expected-previous-attempt-sha256')
     parser.add_argument('--revision'); parser.add_argument('--expected-plan-sha256'); parser.add_argument('--expected-implementation-sha256')
     parser.add_argument('--observed-phase',choices=p.ORDER); parser.add_argument('--selected',choices=('baseline','upgrade','rollback'))
