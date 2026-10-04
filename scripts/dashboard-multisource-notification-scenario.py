@@ -7,6 +7,7 @@ are admitted by normal Control Store methods; receipts survive uncertain calls.
 """
 import argparse
 import base64
+import errno
 from contextlib import contextmanager
 from datetime import datetime
 import importlib.util
@@ -23,7 +24,19 @@ RECEIPT = re.compile('[0-9a-f]{32}\\Z')
 
 
 STAGES=frozenset(('host_input','host_transport','host_decode','host_validate','host_receipt','guest_preflight','guest_material','helper_run','guest_cleanup','guest_postflight','guest_barrier'))
-CODES=frozenset(('failed','invalid_result'))
+COMMON_REASONS=frozenset(('file_parent_alias','file_identity','file_changed','immutable_receipt_changed','directory_identity','duplicate_json_field','invalid_json_number','command_failed','command_deadline','command_output_bound','command_error_bound'))
+OS_REASONS={errno.EACCES:'os_permission_denied',errno.EPERM:'os_permission_denied',errno.ENOENT:'os_not_found',errno.ELOOP:'os_symlink',errno.ENOTDIR:'os_not_directory',errno.EISDIR:'os_is_directory',errno.EEXIST:'os_exists',errno.EBADF:'os_bad_descriptor',errno.EMFILE:'os_process_file_limit',errno.ENFILE:'os_system_file_limit',errno.ENOSPC:'os_no_space',errno.EDQUOT:'os_quota',errno.EIO:'os_io',errno.ESTALE:'os_stale',errno.EAGAIN:'os_would_block',errno.EINTR:'os_interrupted',errno.ETIMEDOUT:'os_timeout'}
+CODES=frozenset(('failed','invalid_result','common_failure','os_error'))|frozenset('common_'+v for v in COMMON_REASONS)|frozenset(OS_REASONS.values())
+COMMON_FAILURE_TYPE=None
+
+
+def failure_code(error):
+ # Recognize only the exact class from the hash-pinned common module. Never
+ # serialize arbitrary exception strings, filenames, errno values or attributes.
+ if COMMON_FAILURE_TYPE is not None and type(error) is COMMON_FAILURE_TYPE:
+  return 'common_'+error.code if error.code in COMMON_REASONS else 'common_failure'
+ if isinstance(error,OSError):return OS_REASONS.get(error.errno,'os_error')
+ return 'failed'
 
 
 class ScenarioFailure(Exception):
@@ -37,11 +50,11 @@ class ScenarioFailure(Exception):
 def at_stage(stage):
  try:yield
  except ScenarioFailure:raise
- except Exception:raise ScenarioFailure(stage) from None
+ except Exception as error:raise ScenarioFailure(stage,failure_code(error)) from None
 
 
 def failure_frame(error,default='host_input'):
- if not isinstance(error,ScenarioFailure):error=ScenarioFailure(default)
+ if not isinstance(error,ScenarioFailure):error=ScenarioFailure(default,failure_code(error))
  return {'scenarioFailure':{'stage':error.stage,'code':error.code}}
 
 
@@ -56,11 +69,13 @@ def checked_result(c,raw):
 
 
 def common_module():
+ global COMMON_FAILURE_TYPE
  import hashlib
  path=Path(__file__).resolve().with_name('dashboard-scale-source-common.py')
  raw=path.read_bytes()
  if hashlib.sha256(raw).hexdigest()!=COMMON_SHA:raise ValueError('reviewed_common_changed')
  spec=importlib.util.spec_from_file_location('common',path);c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+ COMMON_FAILURE_TYPE=c.Failure
  return c,raw
 
 
@@ -209,7 +224,7 @@ def _main():
  host='pg01' if args.action=='settled' else 'control01';connection=connections[host]
  # Both local dependencies and the transmitted program are exact reviewed bytes;
  # all dynamic selections travel as JSON stdin, never shell interpolation.
- code="import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\ntry:\n result=guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))\nexcept Exception as error:\n result=failure_frame(error,'guest_preflight')\nprint(c.encoded(result).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(Path(__file__).read_bytes().replace(b"if __name__ == '__main__':",b"if False:")).decode())
+ code="import base64,types,json\nc=types.ModuleType('common');exec(base64.b64decode(%r),c.__dict__)\nexec(base64.b64decode(%r))\nexec(REMOTE)\nCOMMON_FAILURE_TYPE=c.Failure\ntry:\n result=guest(c,c.decode(__import__('sys').stdin.buffer.read(65537)))\nexcept Exception as error:\n result=failure_frame(error,'guest_preflight')\nprint(c.encoded(result).decode(),end='')"%(base64.b64encode(common_raw).decode(),base64.b64encode(Path(__file__).read_bytes().replace(b"if __name__ == '__main__':",b"if False:")).decode())
  with at_stage('host_transport'):
   raw=c.run(['ssh','-i',connection['ansible_ssh_private_key_file'],'-p',str(connection['ansible_port']),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10','-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={state / "known_hosts"}','-o','HostKeyAlgorithms=ssh-ed25519',f'{connection["ansible_user"]}@{connection["ansible_host"]}','sudo python3 -c '+shlex.quote(code)],c.encoded(payload),timeout=50,maximum=8192)
  result=checked_result(c,raw)

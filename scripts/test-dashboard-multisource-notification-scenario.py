@@ -59,11 +59,11 @@ class TwoSourceNotificationTests(unittest.TestCase):
  def test_guest_host_and_root_guard_precede_mutation(self):
   payload={'profile':'primary','action':'prepare','receipt':'a'*32,'case':None}
   with patch.object(g.os,'geteuid',return_value=1),patch.object(g,'process') as process:
-   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_common_failure'):g.guest(c,payload)
    process.assert_not_called()
   with patch.object(g.os,'geteuid',return_value=0),patch.object(g.sys,'platform','linux'),patch.object(g.os,'uname') as host,patch.object(g,'process') as process:
    host.return_value.nodename='storage01'
-   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_common_failure'):g.guest(c,payload)
    process.assert_not_called()
 
  def test_barrier_boolean_is_not_a_timer_or_cross_database_write(self):
@@ -151,14 +151,14 @@ class TwoSourceNotificationTests(unittest.TestCase):
     host.return_value.nodename='control01'
     self.assertEqual(g.guest(c,payload),fixture());self.assertFalse((root/'.multisource-notification-database-url').exists());run.assert_called_once()
     run.reset_mock();c.put(root/'.multisource-notification-database-url',b'unknown-prior-operation')
-    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_failed'):g.guest(c,payload)
+    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_preflight_common_failure'):g.guest(c,payload)
     run.assert_not_called();self.assertEqual(c.read(root/'.multisource-notification-database-url'),b'unknown-prior-operation')
     (root/'.multisource-notification-database-url').unlink();run.side_effect=c.Failure('helper_failed')
-    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_helper_run_failed'):g.guest(c,payload)
+    with self.assertRaisesRegex(h.ScenarioFailure,'scenario_helper_run_common_failure'):g.guest(c,payload)
     self.assertFalse((root/'.multisource-notification-database-url').exists())
     run.side_effect=helper
     with patch.object(g,'process',side_effect=[('1','2','fixed'),('9','10','changed')]):
-     with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_postflight_failed'):g.guest(c,payload)
+     with self.assertRaisesRegex(h.ScenarioFailure,'scenario_guest_postflight_common_failure'):g.guest(c,payload)
     self.assertFalse((root/'.multisource-notification-database-url').exists())
 
  def test_failed_frames_only_expose_fixed_stage_codes(self):
@@ -177,6 +177,47 @@ class TwoSourceNotificationTests(unittest.TestCase):
    self.assertNotIn(secret,str(failure.exception))
   self.assertEqual(h.failure_frame(ValueError(secret)),{'scenarioFailure':{'stage':'host_input','code':'failed'}})
 
+ def test_finite_reasons_never_serialize_private_exception_material(self):
+  canary='private-password-and-file-path'
+  for reason in h.COMMON_REASONS:
+   with self.subTest(reason=reason):
+    with self.assertRaises(h.ScenarioFailure) as caught:
+     with h.at_stage('host_receipt'):raise c.Failure(reason)
+    self.assertEqual(h.failure_frame(caught.exception),{'scenarioFailure':{'stage':'host_receipt','code':'common_'+reason}})
+  self.assertEqual(h.failure_code(c.Failure('private_unrecognized_reason')),'common_failure')
+  class Untrusted(ValueError):code='file_identity'
+  self.assertEqual(h.failure_code(Untrusted(canary)),'failed')
+  for number,code in list(h.OS_REASONS.items())+[(99999,'os_error')]:
+   with self.subTest(errno=number):
+    error=OSError(number,canary,'/'+canary)
+    frame=h.failure_frame(error)
+    self.assertEqual(frame,{'scenarioFailure':{'stage':'host_input','code':code}})
+    self.assertNotIn(canary,str(frame));self.assertIn(code,h.CODES)
+  for value in h.CODES:
+   with self.assertRaises(h.ScenarioFailure) as caught:h.checked_result(c,c.encoded({'scenarioFailure':{'stage':'host_input','code':value}}))
+   self.assertEqual(caught.exception.code,value)
+
+ def test_fast_new_receipt_reads_and_metadata_mismatch_are_distinct(self):
+  with tempfile.TemporaryDirectory() as name:
+   directory=Path(name).resolve()
+   for i in range(20):
+    path=directory/('receipt-%d.json'%i);raw=c.encoded(event());c.retain(path,raw)
+    self.assertEqual(c.read(path),raw);c.retain(path,raw)
+    path.chmod(0o640)
+    with self.assertRaisesRegex(h.ScenarioFailure,'common_file_identity'):
+     with h.at_stage('host_receipt'):c.retain(path,raw)
+    path.chmod(0o600)
+    with self.assertRaisesRegex(h.ScenarioFailure,'common_immutable_receipt_changed'):
+     with h.at_stage('host_receipt'):c.retain(path,c.encoded(dict(event(),jobRevision='3')))
+    self.assertEqual(c.read(path),raw)
+   actual=Path.lstat
+   def changed(path):
+    result=actual(path)
+    return types.SimpleNamespace(st_dev=result.st_dev,st_ino=result.st_ino+1)
+   with patch.object(Path,'lstat',changed):
+    with self.assertRaisesRegex(h.ScenarioFailure,'common_file_changed'):
+     with h.at_stage('host_receipt'):c.read(path)
+
  def test_host_receipt_failure_preserves_existing_bytes_and_success_shape(self):
   with tempfile.TemporaryDirectory() as name:
    directory=Path(name).resolve();path=directory/'fixture.json';payload={'profile':'primary','action':'complete','receipt':'a'*32,'case':'first','fixture':fixture()};result=event()
@@ -185,9 +226,9 @@ class TwoSourceNotificationTests(unittest.TestCase):
    self.assertEqual(before,c.encoded(result));h.retain_result(c,result,payload,path,directory)
    self.assertEqual(c.read(destination),before)
    changed=dict(result,eventId='77000000-0000-4000-8000-000000000002')
-   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_receipt_failed'):h.retain_result(c,changed,payload,path,directory)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_receipt_common_immutable_receipt_changed'):h.retain_result(c,changed,payload,path,directory)
    self.assertEqual(c.read(destination),before)
-   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_validate_failed'):h.retain_result(c,dict(result,jobId='secret'),payload,path,directory)
+   with self.assertRaisesRegex(h.ScenarioFailure,'scenario_host_validate_common_failure'):h.retain_result(c,dict(result,jobId='secret'),payload,path,directory)
    self.assertEqual(c.read(destination),before)
 
 
