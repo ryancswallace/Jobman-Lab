@@ -38,6 +38,24 @@
     group: root
     mode: "0700"
 
+- name: Check for an explicitly upgraded source revision
+  ansible.builtin.stat:
+    path: /usr/local/libexec/jobman-dashboard-lab/source-current.json
+  register: dashboard_source_current
+
+- name: Read the public upgraded source revision
+  ansible.builtin.slurp:
+    src: /usr/local/libexec/jobman-dashboard-lab/source-current.json
+  register: dashboard_source_current_data
+  when: dashboard_source_current.stat.exists
+
+- name: Refuse implicit source downgrade or upgrade during initial provisioning
+  ansible.builtin.assert:
+    that:
+      - (dashboard_source_current_data.content | b64decode | from_json).revision == (lookup('ansible.builtin.file', dashboard_control_build + '/build.json') | from_json).revision
+    fail_msg: "Source revision differs. Use the explicit scoped upgrade workflow; never downgrade its migration ledger."
+  when: dashboard_source_current.stat.exists
+
 - name: Install the exact verified source binaries and build evidence
   ansible.builtin.copy:
     src: "{{ dashboard_control_build }}/{{ item }}"

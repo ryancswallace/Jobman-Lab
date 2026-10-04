@@ -429,6 +429,48 @@ To stop this fixture, stop only `jobman-dashboard-lab-app` on storage01 and
 ledger and both dedicated databases for inspection/recovery. Starting the
 fixture does not constitute production, APNs, AD FS or managed-iPhone acceptance.
 
+### Forward-only synthetic Control upgrades
+
+Completed source preparation intentionally does not rerun migrations. After
+reviewing a newer exact Control binary and its forward migration, use the
+explicit upgrade helper instead of rerunning the original fixture bundle:
+
+```sh
+./scripts/upgrade-dashboard-source.py /absolute/path/to/reviewed-control-build \
+  --from-revision <recorded-current-full-revision> \
+  --expected-migration <last-reviewed-migration-filename>
+```
+
+The supplied `build.json` must identify the Linux ARM64 revision and binary
+SHA-256. Preflight verifies the dedicated TLS-only `jobman_dashboard_control`
+database, unchanged source instance, small synthetic dataset, private source
+environment and absence of a pending directory-recovery receipt. The helper
+stages the verified binary, stops only `jobman-dashboard-lab-control`, runs the
+normal binary once with migration enabled and directory mode `preview`, and
+checks the resulting migration ledger before installing and starting it.
+Preview exits before listeners, directory mutation or delegation registration.
+
+The previous executable is retained with its source revision, and public
+`source-current.json` records the new binary and migration. Initial provisioning
+refuses a different recorded revision to prevent an implicit downgrade. A
+failed transition leaves the isolated source for inspection; it never resets a
+database, reseeds identities, changes source keys, or automatically rolls back
+forward-only migrations. Verify TLS readiness and current directory proofs after
+recovery. The original Control, Keycloak and LDAP units are not restarted by this
+upgrade. The synthetic Control uses an Ed25519 certificate; use the guest's TLS
+client or a supported Go/OpenSSL client if the host's legacy curl cannot
+negotiate that algorithm.
+
+The 2026-10-04 isolated acceptance upgraded Control from
+`4b04d197fd030ea1f440384f5474243cd20cedd8` to
+`7320151070c15683543de3ea3ab1b6eab834328e` and applied
+`000019_target_catalog.sql`. The dedicated database and instance were unchanged;
+verified TLS advertised `target-catalogs`. The isolated Control unit started at
+00:09:33 UTC. Original Control and Keycloak retained their 2026-08-31 start times
+of 19:01:41 and 19:01:36 UTC respectively; the synthetic LDAP unit retained its
+2026-10-03 23:06:37 UTC start time. Dashboard runtime readiness passed afterward.
+These timestamps record this acceptance run, not a requirement for future runs.
+
 ### Reversible synthetic directory acceptance
 
 `scripts/dashboard-directory-scenario.py` is limited to the approved two-user,
