@@ -162,15 +162,26 @@ def capabilities(control):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx), NoRedirect())
     with opener.open(control['origin'] + '/v1/capabilities', timeout=5) as response:
         raw = response.read(65537); r.need(response.status == 200 and len(raw) <= 65536, 'capabilities_bound')
-    value = p.decode(raw)['capabilities']
+    document = p.decode(raw); value = document['capabilities']
     r.need(value['instanceId'] == control['expectedInstanceId'] and re.fullmatch('[1-9][0-9]{0,18}', value['recoveryEpoch']), 'capabilities_identity')
-    return {'deploymentId': control['id'], 'instanceId': value['instanceId'], 'recoveryEpoch': value['recoveryEpoch']}
+    result = {'deploymentId': control['id'], 'instanceId': value['instanceId'], 'recoveryEpoch': value['recoveryEpoch']}
+    if p.TRANSITION == 'rc3-to-rc6':
+        versions, features = value.get('contractVersions'), value.get('features')
+        r.need(document.get('apiVersion') == 'jobman.control/v1alpha1' and document.get('kind') == 'ControlCapabilities' and
+               isinstance(versions, list) and len(versions) <= 32 and 'jobman.control/v1alpha1' in versions and
+               isinstance(features, list) and len(features) <= 128 and 'bounded-run-catalog' in features, 'bounded_run_catalog_required')
+        result['boundedRunCatalog'] = True
+    return result
 
 
 def operator_proofs():
     result = {}
     for filename in (p.OPERATOR, *p.RECOVERIES):
+        if filename == p.AUTH_RECOVERY:
+            directory(Path(p.AUTH_ROOT))
         raw = r.read(filename, 0); config = p.decode(raw)
+        if filename == p.AUTH_RECOVERY:
+            r.need(config.get('encryption') == p.AUTHENTICATION, 'rotated_recovery_authentication')
         materials = {}
         for name in refs(config):
             choices = [(root, uid) for _, root, uid, *_ in r.SPECS.values()] + [(str(Path(filename).parent), 0)]
@@ -186,6 +197,8 @@ def operator_proofs():
             content = r.read(name, owner, mode)
             materials[name] = {'sha256': r.sha(content), 'bytes': len(content), 'uid': owner, 'mode': mode}
         result[filename] = {'sha256': r.sha(raw), 'files': materials}
+        if filename == p.AUTH_RECOVERY:
+            result[filename]['authentication'] = config['encryption']
     return result
 
 

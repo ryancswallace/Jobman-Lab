@@ -9,6 +9,67 @@ freeze and other synthetic workload tests to finish before taking a live snapsho
 No release publication, production deployment, schema migration, source restart,
 feed recovery, or identity-policy change is part of this operation.
 
+## RC6 transition after authentication rotation
+
+The candidate source is frozen at `633b5e3fdc08cc973e9f318faefccc298c713295`.
+The exact hosted Linux package was independently verified against the GitHub
+artifact digest, all 55 archive files, 54 inner checksums, both executable hashes,
+and the committed documentation, deployment files and 18 migration checksums.
+
+The additive `rc3-to-rc6` profile upgrades only the three existing split role
+binaries/unit release paths and API static root. It accepts only these fixed
+reviewed Linux ARM64 digests:
+
+| Input | SHA256 |
+| --- | --- |
+| `jobman-dashboard_v0.1.0-rc.6_linux_arm64.tar.gz` | `c705c532b7c6261bc191e7cfa5a92dc7c1e1927368a37207245f38292cb8ad3c` |
+| `bin/jobman-dashboard` | `55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7` |
+| `bin/jobman-log-broker` | `1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8` |
+
+There is no CLI argument for arbitrary revisions, artifact digests, role
+identities or paths. Missing or malformed pins fail before snapshot or guest
+access. Source and artifact verification alone do not establish live acceptance.
+
+The fixed predecessor is `9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2`, including both
+recorded RC3 executable hashes. Configuration 8/schema 18, original source instance
+IDs, epoch 1, exactly 12/7 namespaces and active feeds without unresolved gaps or
+recoveries remain required. Both Controls must now advertise the actual
+`bounded-run-catalog` contract. Their separate reviewed binary upgrades happen
+before taking this candidate snapshot; this driver never restarts Control.
+
+Snapshot the current released delivery hold, including its generation and restore
+cutoff; do not substitute the old scale-activation generation 5. A held baseline
+is refused. Every following phase requires exact hold/cutoff continuity, while
+normal feed generation/position may only advance. Source scope, role policy,
+database identity and every migration checksum remain fixed. No DDL, role change,
+rebind, replay, hold/resume operation, quota change or automatic rollback occurs.
+
+The active API must use authentication key ID `lab-auth-rotation-v1` at the exact
+role-owned `authentication-rotation-v1.key`, with its 32-byte digest proof. Preserve
+all three root-owned recovery drafts byte-for-byte: original multisource, scale,
+and `/etc/jobman-dashboard-auth-rotation-lab/recovery.json`. The rotation directory
+must remain root-owned 0700 and the draft 0600; its authentication reference and
+material proof must equal the active API's rotated key. Old drafts remain
+historical evidence and are never overwritten, rekeyed or run. Their retained
+old static paths are permitted exactly as captured. All dedicated purpose keys,
+source certificates/signers, database material, report objects, sessions and
+existing browse records remain untouched.
+
+Use a new private staging directory and a fresh snapshot after all outstanding
+operations close. Pass `--transition rc3-to-rc6` on every command. Its separately
+named host/guest operation receipts use the same existing global locks, so the
+older RC2/RC3 receipts and backups cannot be replaced or replayed. Preserve all
+pending evidence on failure; a lost reply permits only the existing bounded
+observation path, never a repeated mutation. Ordinary service restart creates
+its own RuntimeDirectory before the new active-process/config/readiness checks;
+this driver does not manually stop roles or recreate missing runtime paths.
+
+Use the same snapshot, prepare and explicit phased commands below with
+`--transition rc3-to-rc6` and the exact RC6 archive. The independently reviewed
+implementation and fresh prepared plan must match every phase. No live result
+is implied by these offline checks. The candidate remains an engineering prerelease: source/protocol checks do not prove final
+upstream tag publication, corporate AD FS, APNs or managed-iPhone acceptance.
+
 ## RC3 transition after scale activation
 
 Use explicit `--transition rc2-to-rc3` on **every** command for the approved
@@ -175,7 +236,7 @@ python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py prepare \
 Review `plan.json`, its exact SHA256, the implementation SHA256, and `review.json`.
 The plan contains each old/new unit and configuration digest, captured process
 PID/start/boot identity, material ownership/digests, schema ledger, source proof,
-and all 52 candidate file hashes/modes. An offline fixture is never a live plan.
+and all candidate file hashes/modes. An offline fixture is never a live plan.
 No configuration or service changes happen during snapshot or preparation.
 
 ## Explicit phases
@@ -202,7 +263,7 @@ unexpected failure. Do not batch a blind retry loop.
    one receipt-bound daemon reload, validates the loaded command paths and then
    requests one bounded service restart. Fresh process identity, exact executable
    bytes, configuration validation, local live/ready endpoints and loaded
-   revision7 metrics must all pass. A shared deadline bounds startup checks.
+   the profile’s captured configuration revision metrics must all pass. A shared deadline bounds startup checks.
 5. `verify --host pg01 --apply`, then `control01`, then `storage01`. Despite the
    explicit phase-authorization flag, pg01 only executes the fixed read-only
    query. Service hosts recheck full immutable candidate inventory, exact active

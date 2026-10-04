@@ -196,6 +196,150 @@ class CandidateRC3(unittest.TestCase):
             identity.assert_not_called()
 
 
+class CandidateRC6(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(select_all, p.DEFAULT_TRANSITION)
+        files = {'bin/jobman-dashboard': b'synthetic-candidate-dashboard',
+                 'bin/jobman-log-broker': b'synthetic-candidate-broker'}
+        self.binaries = files
+        # Synthetic fixtures patch only local module dictionaries.
+        # The separate subprocess checks the exact reviewed source pins.
+        for module in (p, g.p, h.p):
+            change = patch.dict(module.TRANSITIONS['rc3-to-rc6'],
+                {'new': 'f'*40, 'archive': 'e'*64, 'binaries': {n: p.sha(v) for n,v in files.items()}})
+            change.start(); self.addCleanup(change.stop)
+        prior = rc3_fixture(); old_root = p.OLD_ROOT
+        select_all('rc3-to-rc6')
+        snapshot = copy.deepcopy(prior['snapshot']); snapshot['transition'] = p.TRANSITION
+        # A later completed restore/hold generation is recorded, not reset to5.
+        snapshot['hosts']['pg01']['database']['hold'] = {'held': False, 'generation': '9', 'suppressRecordedThrough': '2026-10-04 01:02:03+00'}
+        for role in p.ROLES:
+            value = snapshot['hosts'][p.r.SPECS[role][0]]['roles'][role]
+            config = p.decode(p.unb64(value['config']))
+            if role == 'api':
+                config['webRoot'] = p.OLD_ROOT+'/web'; config['encryption'] = dict(p.AUTHENTICATION)
+                value['materials'][p.AUTHENTICATION['keyFile']] = {'sha256': 'c'*64, 'bytes': 32, 'uid': 21904, 'mode': 0o600}
+            value['config'] = b64(p.encoded(config))
+            value['unit'] = b64(p.unb64(value['unit']).replace(old_root.encode(), p.OLD_ROOT.encode()))
+            value['process']['binary'] = value['process']['binary'].replace(old_root,p.OLD_ROOT)
+            value['process']['binarySHA256'] = p.TRANSITIONS[p.TRANSITION]['oldBinaries']['bin/'+p.r.SPECS[role][5]]
+            for capability in value['capabilities']: capability['boundedRunCatalog'] = True
+        key = snapshot['hosts']['storage01']['roles']['api']['materials'][p.AUTHENTICATION['keyFile']]
+        snapshot['hosts']['storage01']['operator'] = {name: {'sha256': 'd'*64, 'files': {}} for name in (p.OPERATOR,*p.RECOVERIES)}
+        snapshot['hosts']['storage01']['operator'][p.AUTH_RECOVERY].update(authentication=dict(p.AUTHENTICATION),files={p.AUTHENTICATION['keyFile']: copy.deepcopy(key)})
+        self.files = {name: b'x' for name in prior['candidateFiles']}; self.files.update(files)
+        self.snapshot = snapshot
+        self.plan = self.make(snapshot)
+
+    def make(self, snapshot):
+        return p.make(snapshot, {'revision': p.NEW,'version':p.VERSION},self.files,COMMITTED_LEDGER,{name:'a'*64 for name in p.FILES})
+
+    def test_rotated_profile_preserves_only_expected_configuration_delta(self):
+        p.validate(self.plan)
+        self.assertEqual(p.OLD, '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2')
+        self.assertEqual(p.RECOVERIES,(p.LEGACY_RECOVERY,p.SCALE_RECOVERY,p.AUTH_RECOVERY))
+        self.assertEqual(p.RECOVERY,p.AUTH_RECOVERY)
+        self.assertEqual(p.OPERATION_NAME,'operation-rc3-to-rc6')
+        self.assertEqual(p.HOST_OPERATION_NAME,'.candidate-upgrade.rc3-to-rc6.operation.json')
+        for role in p.ROLES:
+            before=p.unb64(self.snapshot['hosts'][p.r.SPECS[role][0]]['roles'][role]['config'])
+            after=p.unb64(self.plan['changes'][role]['afterConfig'])
+            if role != 'api': self.assertEqual(before,after)
+            else:
+                a,b=p.decode(before),p.decode(after)
+                self.assertEqual(a.pop('webRoot'),p.OLD_ROOT+'/web'); self.assertEqual(b.pop('webRoot'),p.NEW_ROOT+'/web')
+                self.assertEqual(a,b); self.assertEqual(b['encryption'],p.AUTHENTICATION)
+        self.assertEqual(self.plan['snapshot']['hosts']['storage01']['operator'],self.snapshot['hosts']['storage01']['operator'])
+
+    def test_key_rotation_recovery_scope_or_binary_drift_fails_offline(self):
+        def api(v): return v['hosts']['storage01']['roles']['api']
+        def old_auth(v):
+            config=p.decode(p.unb64(api(v)['config']));config['encryption']['keyId']='old';api(v)['config']=b64(p.encoded(config))
+        changes=[old_auth,
+            lambda v: api(v)['process'].update(binarySHA256='a'*64),
+            lambda v: api(v)['materials'][p.AUTHENTICATION['keyFile']].update(bytes=31),
+            lambda v: v['hosts']['storage01']['operator'].pop(p.LEGACY_RECOVERY),
+            lambda v: v['hosts']['storage01']['operator'].pop(p.AUTH_RECOVERY),
+            lambda v: v['hosts']['storage01']['operator'][p.AUTH_RECOVERY]['authentication'].update(keyId='old'),
+            lambda v: v['hosts']['storage01']['operator'][p.AUTH_RECOVERY]['files'][p.AUTHENTICATION['keyFile']].update(sha256='a'*64),
+            lambda v: v['hosts']['storage01']['roles']['worker']['capabilities'][0].update(boundedRunCatalog=False),
+            lambda v: v['hosts']['pg01']['database']['hold'].update(held=True),
+            lambda v: v['hosts']['pg01']['database']['sources'][0]['namespaceIds'].pop()]
+        for change in changes:
+            value=copy.deepcopy(self.snapshot); change(value)
+            with self.subTest(change=change),self.assertRaises(ValueError): self.make(value)
+
+    def test_current_hold_and_restore_floor_are_preserved_with_monotonic_feeds(self):
+        before=self.plan['database']; after=copy.deepcopy(before)
+        for source in after['sources']: source['generation']=str(int(source['generation'])+10);source['lastPosition']=str(int(source['lastPosition'])+4)
+        g.database_continuity(before,after)
+        for change in [lambda v:v['hold'].update(generation='10'),lambda v:v['hold'].update(suppressRecordedThrough=None),lambda v:v['sources'][0].update(lastPosition='0')]:
+            value=copy.deepcopy(after);change(value)
+            with self.assertRaises(ValueError):g.database_continuity(before,value)
+
+    def test_rotated_draft_is_root_private_and_only_material_digests_escape(self):
+        read=[]; directory=[]
+        def fake_read(name,*args):
+            read.append((str(name),args))
+            if str(name)==p.AUTHENTICATION['keyFile']: return b'X'*32
+            if str(name)==p.AUTH_RECOVERY:return p.encoded({'encryption':p.AUTHENTICATION})
+            return p.encoded({'noPrivateFiles':True})
+        with patch.object(g.r,'read',side_effect=fake_read),patch.object(g,'directory',side_effect=lambda path:directory.append(str(path))):
+            proofs=g.operator_proofs()
+        self.assertEqual(directory,[p.AUTH_ROOT])
+        self.assertEqual(set(proofs),{p.OPERATOR,*p.RECOVERIES})
+        self.assertEqual(proofs[p.AUTH_RECOVERY]['authentication'],p.AUTHENTICATION)
+        self.assertEqual(proofs[p.AUTH_RECOVERY]['files'][p.AUTHENTICATION['keyFile']],{'sha256':p.sha(b'X'*32),'bytes':32,'uid':21904,'mode':0o600})
+        self.assertNotIn('X'*32,json.dumps(proofs))
+        self.assertIn((p.AUTH_RECOVERY,(0,)),read)
+
+    def test_public_capabilities_require_the_actual_run_contract(self):
+        source=self.snapshot['hosts']['storage01']['roles']['worker']['capabilities'][0]
+        control={'id':source['deploymentId'],'expectedInstanceId':source['instanceId'],'origin':'https://10.77.0.21:18443','trustRootsFile':'/synthetic/public-ca'}
+        document={'apiVersion':'jobman.control/v1alpha1','kind':'ControlCapabilities','capabilities':{'instanceId':source['instanceId'],'recoveryEpoch':'1','features':['bounded-run-catalog'],'contractVersions':['jobman.control/v1alpha1']}}
+        class Response:
+            status=200
+            def __enter__(self):return self
+            def __exit__(self,*_):return None
+            def read(self,maximum):
+                assert maximum==65537
+                return p.encoded(document)
+        class Opener:
+            def open(self,url,timeout):
+                assert url==control['origin']+'/v1/capabilities' and timeout==5
+                return Response()
+        class TLS:minimum_version=None
+        with patch.object(g.Path,'read_bytes',return_value=b'synthetic-public-ca'),patch.object(g.ssl,'create_default_context',return_value=TLS()),patch.object(g.urllib.request,'HTTPSHandler'),patch.object(g.urllib.request,'build_opener',return_value=Opener()):
+            self.assertEqual(g.capabilities(control),dict(source,boundedRunCatalog=True))
+            document['capabilities']['features']=[]
+            with self.assertRaisesRegex(ValueError,'bounded_run_catalog_required'):g.capabilities(control)
+            document['capabilities']['features']=['bounded-run-catalog'];document['kind']='Other'
+            with self.assertRaisesRegex(ValueError,'bounded_run_catalog_required'):g.capabilities(control)
+
+    def test_source_profile_has_only_exact_reviewed_pins(self):
+        # A fresh process reads actual source, not synthetic fixture patches.
+        code = "import importlib.util,json;from pathlib import Path;spec=importlib.util.spec_from_file_location('p',Path('dashboard-candidate-plan.py'));p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p);p.select_transition('rc3-to-rc6');print(json.dumps(p.TRANSITIONS[p.TRANSITION]))"
+        result = subprocess.run([sys.executable,'-c',code],cwd=HERE,capture_output=True,timeout=5,check=True)
+        profile = json.loads(result.stdout)
+        self.assertEqual(profile['new'],'633b5e3fdc08cc973e9f318faefccc298c713295')
+        self.assertEqual(profile['archive'],'c705c532b7c6261bc191e7cfa5a92dc7c1e1927368a37207245f38292cb8ad3c')
+        self.assertEqual(profile['binaries'],{
+            'bin/jobman-dashboard':'55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7',
+            'bin/jobman-log-broker':'1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8'})
+        self.assertEqual(result.stderr,b'')
+        with patch.dict(p.TRANSITIONS['rc3-to-rc6'],{'archive':None}):
+            with self.assertRaisesRegex(ValueError,'candidate_profile_not_pinned'):p.select_transition('rc3-to-rc6')
+        with patch.dict(p.TRANSITIONS['rc3-to-rc6'],{'binaries':{}}):
+            with self.assertRaisesRegex(ValueError,'candidate_binary_pins_missing'):p.select_transition('rc3-to-rc6')
+
+    def test_wrong_rotated_draft_key_fails_before_any_material_read(self):
+        def fake_read(name,*args):
+            return p.encoded({'encryption':{'keyId':'old','keyFile':'/wrong'}} if str(name)==p.AUTH_RECOVERY else {'noPrivateFiles':True})
+        with patch.object(g,'directory'),patch.object(g.r,'read',side_effect=fake_read) as read:
+            with self.assertRaisesRegex(ValueError,'rotated_recovery_authentication'):g.operator_proofs()
+        self.assertEqual(read.call_count,4)
+
+
 class Candidate(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)

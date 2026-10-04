@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure plans for two explicit reviewed same-schema binary/static-asset upgrades."""
+"""Pure plans for explicit reviewed same-schema binary/static-asset upgrades."""
 import base64
 import copy
 import importlib.util
@@ -23,6 +23,15 @@ TRANSITIONS = {
         'new': '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1',
         'archive': '1634cb3c44e9ca1b9321a42783be22fe7254cca8d0c235371de19db593dec85a',
         'version': 'v0.1.0-rc.2', 'revision': 7},
+    # Exact hosted RC6 candidate; this fixed profile preserves rotated API auth.
+    'rc3-to-rc6': {'old': '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2',
+        'new': '633b5e3fdc08cc973e9f318faefccc298c713295',
+        'archive': 'c705c532b7c6261bc191e7cfa5a92dc7c1e1927368a37207245f38292cb8ad3c',
+        'binaries': {'bin/jobman-dashboard': '55439501efe320524e0216947cb30f6bfc2764fa73e9fdc0fdb6b766e2c482e7',
+                     'bin/jobman-log-broker': '1457a7b9159285e4054d9ef8b850bc377f99e225eec1bccac0a2fda7d05bdbf8'},
+        'oldBinaries': {'bin/jobman-dashboard': 'e03612c5ab0384e8bac2150ae498fb4e0b6076c7644ec1120d3ae9f0572bf411',
+                        'bin/jobman-log-broker': '18d77e81fa41662bfd6003a8722f4da2b76afc4e11de164417fa529bb5e0a096'},
+        'version': 'v0.1.0-rc.6', 'revision': 8},
     'rc2-to-rc3': {'old': '42d153b4672aeb5cdb2d7395f052b8c6a095f5e1',
         'new': '9b1c65e31db8a849ebe2dfa00caf4474bef8e7d2',
         'archive': '179af3e6a60002fe3dcd630867e0911971461493b9aea291263d894a3fdaf705',
@@ -36,6 +45,9 @@ CA = '/etc/pki/ca-trust/source/anchors/jobman-lab-ca.crt'
 OPERATOR = '/etc/jobman-dashboard-operator-lab/config.json'
 LEGACY_RECOVERY = '/etc/jobman-dashboard-operator-lab/multisource-recovery.json'
 SCALE_RECOVERY = '/etc/jobman-dashboard-operator-lab/scale-recovery.json'
+AUTH_ROOT = '/etc/jobman-dashboard-auth-rotation-lab'
+AUTH_RECOVERY = AUTH_ROOT + '/recovery.json'
+AUTHENTICATION = {'keyId': 'lab-auth-rotation-v1', 'keyFile': '/etc/jobman-dashboard-api-lab/authentication-rotation-v1.key'}
 
 
 def select_transition(name):
@@ -45,6 +57,8 @@ def select_transition(name):
     global RECOVERY, RECOVERIES, OPERATION_NAME, HOST_OPERATION_NAME
     need(name in TRANSITIONS, 'unsupported_candidate_transition')
     profile = TRANSITIONS[name]; TRANSITION = name
+    need(isinstance(profile['new'], str) and re.fullmatch('[0-9a-f]{40}', profile['new']) and
+         isinstance(profile['archive'], str) and re.fullmatch('[0-9a-f]{64}', profile['archive']), 'candidate_profile_not_pinned')
     OLD, NEW, ARCHIVE = profile['old'], profile['new'], profile['archive']
     VERSION, REVISION = profile['version'], profile['revision']
     OLD_ROOT = '/opt/jobman-dashboard-lab/releases/' + OLD
@@ -53,6 +67,12 @@ def select_transition(name):
     RECOVERIES = (LEGACY_RECOVERY,) if name == DEFAULT_TRANSITION else (LEGACY_RECOVERY, SCALE_RECOVERY)
     OPERATION_NAME = 'operation' if name == DEFAULT_TRANSITION else 'operation-rc2-to-rc3'
     HOST_OPERATION_NAME = '.candidate-upgrade.operation.json' if name == DEFAULT_TRANSITION else '.candidate-upgrade.rc2-to-rc3.operation.json'
+    if name == 'rc3-to-rc6':
+        need(set(profile.get('binaries', {})) == {'bin/jobman-dashboard', 'bin/jobman-log-broker'} and
+             all(isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v) for v in profile['binaries'].values()), 'candidate_binary_pins_missing')
+        RECOVERY, RECOVERIES = AUTH_RECOVERY, (LEGACY_RECOVERY, SCALE_RECOVERY, AUTH_RECOVERY)
+        OPERATION_NAME = 'operation-rc3-to-rc6'
+        HOST_OPERATION_NAME = '.candidate-upgrade.rc3-to-rc6.operation.json'
 
 
 select_transition(DEFAULT_TRANSITION)
@@ -115,6 +135,8 @@ def transform_config(role, raw):
     if role != 'api':
         return raw
     need(config.get('webRoot') == OLD_ROOT + '/web', 'static_root')
+    if TRANSITION == 'rc3-to-rc6':
+        need(config.get('encryption') == AUTHENTICATION, 'rotated_authentication_required')
     result = copy.deepcopy(config); result['webRoot'] = NEW_ROOT + '/web'
     return encoded(result)
 
@@ -139,16 +161,35 @@ def stable_database(value):
              type(source['unfinishedRecoveries']) is int and source['unfinishedRecoveries'] == 0, 'source_recovery_in_progress')
         need(isinstance(source['namespaceIds'], list) and 1 <= len(source['namespaceIds']) <= 320 and
              all(isinstance(n, str) and UUID.fullmatch(n) for n in source['namespaceIds']), 'database_namespace_shape')
-    if TRANSITION == 'rc2-to-rc3':
+    if TRANSITION in ('rc2-to-rc3', 'rc3-to-rc6'):
         counts = dict(zip(SOURCE_IDS, (12, 7)))
         need(all(len(source['namespaceIds']) == counts[source['deploymentId']] and
                  len(set(source['namespaceIds'])) == counts[source['deploymentId']] and source['recoveryEpoch'] == '1'
                  for source in value['sources']), 'rc3_scaled_source_scope')
-        need(value['hold'] == {'held': False, 'generation': '5', 'suppressRecordedThrough': None}, 'rc3_released_scale_hold')
+        if TRANSITION == 'rc2-to-rc3':
+            need(value['hold'] == {'held': False, 'generation': '5', 'suppressRecordedThrough': None}, 'rc3_released_scale_hold')
+        else:
+            need(value['hold'].get('held') is False, 'released_delivery_hold_required')
     hold = value['hold']
     need(type(hold.get('held')) is bool and decimal(hold.get('generation'), positive=True) and
          (hold.get('suppressRecordedThrough') is None or isinstance(hold['suppressRecordedThrough'], str)), 'hold_shape')
     return value
+
+
+def validate_rotated_snapshot(snapshot):
+    if TRANSITION != 'rc3-to-rc6':
+        return
+    all_caps = snapshot['hosts']['storage01']['roles']['worker']['capabilities']
+    need(len(all_caps) == 2 and {c['deploymentId']: c['instanceId'] for c in all_caps} == SOURCE_IDS, 'source_capabilities')
+    need(all(c.get('boundedRunCatalog') is True for c in all_caps), 'bounded_run_catalog_required')
+    proofs = snapshot['hosts']['storage01']['operator']
+    need(set(proofs) == {OPERATOR, *RECOVERIES}, 'all_recovery_drafts_required')
+    api_key = snapshot['hosts']['storage01']['roles']['api']['materials'].get(AUTHENTICATION['keyFile'])
+    need(isinstance(api_key, dict) and set(api_key) == {'sha256', 'bytes', 'uid', 'mode'} and
+         isinstance(api_key['sha256'], str) and HEX.fullmatch(api_key['sha256']) and
+         api_key['bytes'] == 32 and api_key['uid'] == 21904 and api_key['mode'] == 0o600, 'rotated_key_proof')
+    need(proofs[AUTH_RECOVERY].get('authentication') == AUTHENTICATION and
+         proofs[AUTH_RECOVERY].get('files', {}).get(AUTHENTICATION['keyFile']) == api_key, 'rotated_recovery_proof')
 
 
 def make(snapshot, metadata, files, ledger, implementation):
@@ -167,6 +208,8 @@ def make(snapshot, metadata, files, ledger, implementation):
         config = decode(before_config)
         need(value['process']['binary'] == OLD_ROOT + '/bin/' + r.SPECS[role][5] and
              value['process']['uid'] == r.SPECS[role][2] and HEX.fullmatch(value['process']['binarySHA256']), 'baseline_process')
+        if TRANSITION == 'rc3-to-rc6':
+            need(value['process']['binarySHA256'] == TRANSITIONS[TRANSITION]['oldBinaries']['bin/' + r.SPECS[role][5]], 'rc3_binary_digest')
         need(value['process']['pid'].isdigit() and value['process']['startedMonotonic'].isdigit() and UUID.fullmatch(value['process']['bootId']), 'process_generation')
         after_config, after_unit = transform_config(role, before_config), transform_unit(role, before_unit)
         changes[role] = {'beforeConfigSHA256': sha(before_config), 'afterConfigSHA256': sha(after_config),
@@ -178,6 +221,7 @@ def make(snapshot, metadata, files, ledger, implementation):
         if role == 'worker': all_caps = value['capabilities']
     need(len(all_caps) == 2 and {c['deploymentId']: c['instanceId'] for c in all_caps} == SOURCE_IDS, 'source_capabilities')
     need(all(next(s for s in database['sources'] if s['deploymentId'] == c['deploymentId'])['recoveryEpoch'] == c['recoveryEpoch'] for c in all_caps), 'source_epoch')
+    validate_rotated_snapshot(snapshot)
     return {'format': 1, 'transition': TRANSITION, 'scenario': 'dashboard-candidate-upgrade', 'synthetic': True, 'configurationRevision': REVISION,
             'oldRevision': OLD, 'newRevision': NEW, 'archiveSHA256': ARCHIVE, 'candidate': metadata,
             'candidateFiles': {name: {'sha256': sha(raw), 'bytes': len(raw), 'mode': 0o755 if name.startswith('bin/') else 0o644}
@@ -197,6 +241,7 @@ def validate(plan):
     inventory = plan['candidateFiles']
     need(all(name in inventory and inventory[name]['sha256'] == digest for name, digest in TRANSITIONS[TRANSITION].get('binaries', {}).items()), 'candidate_binary_pin')
     need(plan['snapshot'].get('transition') == TRANSITION, 'snapshot_transition')
+    validate_rotated_snapshot(plan['snapshot'])
     need(1 <= len(inventory) <= 4096 and {'bin/jobman-dashboard', 'bin/jobman-log-broker', 'build.json', 'SHA256SUMS', 'web/index.html'} <= set(inventory), 'candidate_inventory_required')
     total = 0
     for name, item in inventory.items():
