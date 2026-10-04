@@ -207,6 +207,45 @@ class WatchdogTests(unittest.TestCase):
         with patch.object(h,'read_plan',return_value=(plan,{})),patch.object(h,'remote',return_value={'armed':True,'restarted':False}) as remote:
             value=h.phase(args);self.assertFalse(value['restarted']);self.assertEqual(remote.call_args.args[1]['phase'],'status')
 
+    def test_pg_snapshot_preserves_exact_go_or_iso_process_time(self):
+        valid=['11996 2026-08-31 21:00:39.957135268 +0200 CEST',
+               '11996 2026-08-31T19:00:39.957135268Z','11996 2026-08-31T21:00:39+02:00']
+        with patch.object(w,'guard'),patch.object(g,'database',return_value={}),\
+             patch.object(r,'retained_identities',return_value={}),patch.object(w,'quiet_database',return_value=True),\
+             patch.object(r,'boot_id',return_value='boot'):
+            for raw in valid:
+                with patch.object(g,'run',return_value=(raw+'\n').encode()) as run:
+                    result=w.snapshot('pg01',fixture()['candidate'])
+                    self.assertEqual(result['postgresProcess'],raw)
+                    self.assertEqual(run.call_args.args[0],['podman','inspect','--format','{{.State.Pid}} {{.State.StartedAt}}','jobman-postgres'])
+            for raw in ['0 2026-08-31T19:00:39Z','01 2026-08-31T19:00:39Z',
+                        '11996 2026-02-30T19:00:39Z','11996 2026-08-31 25:00:39.1 +0200 CEST',
+                        '11996 2026-08-31 21:00:39.1234567890 +0200 CEST',
+                        '11996 2026-08-31 21:00:39.1 +2500 CEST',
+                        '11996 2026-08-31 21:00:39.1 +0260 CEST','11996 2026-08-31T21:00:39+02:60',
+                        '11996 2026-08-31 21:00:39.1 +0200 CEST extra',
+                        '11996 2026-08-31T19:00:39','2147483648 2026-08-31T19:00:39Z']:
+                with patch.object(g,'run',return_value=raw.encode()),patch.object(g,'database') as database:
+                    with self.assertRaisesRegex(ValueError,'postgres_process'):w.snapshot('pg01',fixture()['candidate'])
+                    database.assert_not_called()
+
+    def test_watchdog_uses_relocated_registry_and_refuses_active_or_drifted_records(self):
+        with tempfile.TemporaryDirectory(dir=Path('/tmp').resolve()) as name,\
+             tempfile.TemporaryDirectory(dir=Path('/tmp').resolve(),prefix='jobman-dashboard-fault-records-') as rec:
+            lab=Path(name);home=lab/'.lab/dashboard';home.mkdir(parents=True,mode=0o700);home.chmod(0o700)
+            args=types.SimpleNamespace(lab_root=lab,records_root=Path(rec),apply=True)
+            h.h.prepare_records(args)
+            # The deliberately incomplete legacy guard still blocks frozen old
+            # code, but a valid current binding selects the private registry.
+            h.no_other_operations(lab)
+            legacy=home/'dependency-fault-operations'/h.h.RECORDS_GUARD
+            self.assertFalse((legacy/'complete.json').exists())
+            operation=Path(rec)/'71000000-0000-4000-8000-000000000001';h.h.directory(operation,True)
+            with self.assertRaisesRegex(ValueError,'another_fault_pending'):h.no_other_operations(lab)
+            h.h.save(operation/'complete.json',{'closed':True});h.no_other_operations(lab)
+            (home/h.h.RECORDS_BINDING).unlink()
+            with self.assertRaisesRegex(ValueError,'records_setup_incomplete'):h.no_other_operations(lab)
+
     def test_snapshot_age_cannot_be_reset_by_new_prepare(self):
         plan=fixture();plan['createdAt']=902
         with self.assertRaises(ValueError):p.validate(plan)

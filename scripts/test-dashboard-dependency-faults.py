@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 HERE=Path(__file__).resolve().parent
 
@@ -153,6 +154,106 @@ class PrimitiveTests(unittest.TestCase):
                 result=h.remote(Path(raw).resolve(),{'phase':'database-check','host':'pg01'},h.implementation())
             self.assertEqual(result,{'preserved':True})
         with self.assertRaises(ValueError):h.remote(Path('/unused'),{'phase':'arbitrary','host':'pg01'},h.implementation())
+
+
+class HostRecordTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(dir=Path('/tmp').resolve(),prefix='jobman-dashboard-fault-records-')
+        self.records=Path(self.temp.name).resolve()
+        self.labtemp=tempfile.TemporaryDirectory(dir=Path('/tmp').resolve())
+        self.lab=Path(self.labtemp.name).resolve();self.home=self.lab/'.lab/dashboard'
+        self.home.mkdir(parents=True,mode=0o700);self.home.chmod(0o700)
+        self.legacy=self.home/'dependency-fault-operations';h.directory(self.legacy,True)
+        self.args=SimpleNamespace(lab_root=self.lab,records_root=self.records,apply=True,
+                                  expected_plan_sha256=SHA,staging=self.lab/'staging')
+        self.old=self.legacy/BOOT;h.directory(self.old,True)
+        h.save(self.old/'intent.json',{'planSHA256':SHA,'staging':str(self.lab/'old')})
+        h.save(self.old/'complete.json',{'planSHA256':SHA})
+    def tearDown(self):self.temp.cleanup();self.labtemp.cleanup()
+    def bind(self):return h.prepare_records(self.args)
+    def test_legacy_and_new_registry_preserve_history_and_cross_operation_fence(self):
+        self.assertEqual(h.records_parent(self.lab),self.legacy)
+        before={x.name:x.read_bytes() for x in self.old.iterdir()}
+        result=self.bind();self.assertFalse(result['guestMutations'])
+        self.assertEqual(h.records_parent(self.lab),self.records)
+        first=h.operation_record(self.args,{'operationId':OP},True)
+        self.assertEqual(first,self.records/OP)
+        self.assertEqual(h.operation_record(self.args,{'operationId':OP}),first)
+        with self.assertRaisesRegex(ValueError,'another_operation_pending'):
+            h.operation_record(self.args,{'operationId':BOOT},True)
+        h.save(first/'complete.json',{'planSHA256':SHA})
+        h.operation_record(self.args,{'operationId':BOOT},True)
+        self.assertEqual(before,{x.name:x.read_bytes() for x in self.old.iterdir()})
+        # This is the exact old driver admission predicate: every other entry
+        # must have complete.json. The relocation guard permanently blocks it.
+        self.assertFalse(all((entry/'complete.json').exists() for entry in self.legacy.iterdir()))
+    def test_active_legacy_attempt_prevents_setup_without_writes(self):
+        (self.old/'complete.json').unlink()
+        with self.assertRaisesRegex(ValueError,'another_operation_pending'):self.bind()
+        self.assertFalse((self.home/h.RECORDS_BINDING).exists())
+        self.assertFalse((self.legacy/h.RECORDS_GUARD).exists())
+    def test_setup_is_one_shot_and_requires_explicit_apply(self):
+        self.args.apply=False
+        with self.assertRaisesRegex(ValueError,'explicit_records_apply_required'):self.bind()
+        self.args.apply=True;self.bind()
+        with self.assertRaisesRegex(ValueError,'records_already_bound_or_pending'):self.bind()
+    def test_interrupted_setup_blocks_old_and_new_driver(self):
+        original=h.save
+        def fail_binding(path,value):
+            if path.name==h.RECORDS_BINDING:raise OSError('synthetic interruption')
+            return original(path,value)
+        with patch.object(h,'save',side_effect=fail_binding):
+            with self.assertRaises(OSError):self.bind()
+        with self.assertRaisesRegex(ValueError,'records_setup_incomplete'):h.records_parent(self.lab)
+        with self.assertRaisesRegex(ValueError,'records_already_bound_or_pending'):self.bind()
+        self.assertFalse((self.legacy/h.RECORDS_GUARD/'complete.json').exists())
+    def test_nonempty_or_nonprivate_root_is_refused(self):
+        (self.records/'data').write_bytes(b'preserve')
+        with self.assertRaisesRegex(ValueError,'records_root_not_empty'):self.bind()
+        (self.records/'data').unlink();self.records.chmod(0o750)
+        with self.assertRaisesRegex(ValueError,'host_directory'):self.bind()
+    def test_symlink_or_different_parent_is_refused(self):
+        target=self.records;self.args.records_root=self.lab/'alias';self.args.records_root.symlink_to(target,target_is_directory=True)
+        with self.assertRaisesRegex(ValueError,'host_directory'):self.bind()
+        self.args.records_root=self.lab/'child';h.directory(self.args.records_root,True)
+        with self.assertRaisesRegex(ValueError,'records_root_boundary'):self.bind()
+    def test_replaced_directory_is_refused(self):
+        self.bind();saved=self.records.with_name(self.records.name+'-saved');self.records.rename(saved)
+        try:
+            h.directory(self.records,True)
+            with self.assertRaisesRegex(ValueError,'records_binding_changed'):h.records_parent(self.lab)
+        finally:self.records.rmdir();saved.rename(self.records)
+    def test_private_intent_hardlink_rejected(self):
+        self.bind();root=h.operation_record(self.args,{'operationId':OP},True)
+        os.link(root/'intent.json',self.lab/'linked-intent')
+        with self.assertRaisesRegex(ValueError,'host_file'):h.operation_record(self.args,{'operationId':OP})
+        (self.lab/'linked-intent').unlink();self.assertEqual(h.operation_record(self.args,{'operationId':OP}),root)
+    def test_binding_alias_and_hardlink_rejected(self):
+        self.bind();path=self.home/h.RECORDS_BINDING;saved=self.home/'saved'
+        os.link(path,saved)
+        with self.assertRaisesRegex(ValueError,'host_file'):h.records_parent(self.lab)
+        path.unlink();path.symlink_to(saved)
+        with self.assertRaises(OSError):h.records_parent(self.lab)
+    def test_binding_shape_and_identity_never_coerced(self):
+        self.bind();path=self.home/h.RECORDS_BINDING;original=path.read_bytes();value=p.decode(original)
+        for field,bad in [('format',True),('inode',str(value['inode'])),('device',False),
+                          ('labRoot',str(self.lab/'other')),('unknown',1),('legacySHA256','0'*64)]:
+            changed=dict(value);changed[field]=bad;path.write_bytes(p.encoded(changed))
+            with self.subTest(field=field),self.assertRaises(ValueError):h.records_parent(self.lab)
+        path.write_bytes(original);self.assertEqual(h.records_parent(self.lab),self.records)
+    def test_legacy_evidence_and_guard_drift_fail_closed(self):
+        self.bind();path=self.old/'complete.json';original=path.read_bytes()
+        path.write_bytes(p.encoded({'planSHA256':'d'*64}))
+        with self.assertRaisesRegex(ValueError,'legacy_completion'):h.records_parent(self.lab)
+        path.write_bytes(original);h.save(self.legacy/h.RECORDS_GUARD/'complete.json',{'invented':True})
+        with self.assertRaisesRegex(ValueError,'records_guard_changed'):h.records_parent(self.lab)
+    def test_aborted_attempt_requires_exact_preserved_abort_evidence(self):
+        proof={'accepted':False,'outcome':'aborted'};h.save(self.old/'aborted.json',proof)
+        (self.old/'complete.json').unlink()
+        h.save(self.old/'complete.json',{'planSHA256':SHA,'outcome':'aborted','abortSHA256':p.sha(p.encoded(proof))})
+        self.bind();self.assertEqual(h.records_parent(self.lab),self.records)
+        (self.old/'aborted.json').write_bytes(p.encoded({'accepted':True}))
+        with self.assertRaisesRegex(ValueError,'legacy_abort_changed'):h.records_parent(self.lab)
 
 
 class RecoveryTests(unittest.TestCase):

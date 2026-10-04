@@ -20,7 +20,7 @@ p=importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
 spec=importlib.util.spec_from_file_location('fault_guest',HERE/'dashboard-dependency-fault-guest.py')
 g=importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
 HOSTS=('control01','storage01','pg01')
-PHASES=('snapshot','prepare','stage','begin','recover','status','verify','close','observe-api')
+PHASES=('prepare-records','snapshot','prepare','stage','begin','recover','status','verify','close','observe-api')
 
 
 def read(path,maximum=2<<20,private=True):
@@ -134,9 +134,86 @@ def load_plan(args):
     return plan,hashes
 
 
-def operation_record(args,plan,begin=False):
-    parent=args.lab_root/'.lab/dashboard/dependency-fault-operations'
+# Keep fresh host receipts outside filesystem tools that may temporarily hard-link
+# repository files. The original strict owner/mode/link checks remain in force.
+RECORDS_BINDING = '.dependency-fault-records.json'
+RECORDS_GUARD = 'records-relocated'
+RECORDS_PREFIX = 'jobman-dashboard-fault-records-'
+
+
+def legacy_history(parent, relocated=False):
+    directory(parent); entries=list(parent.iterdir())
+    p.need(len(entries)<=128,'operation_history_bound')
+    history={}
+    for entry in entries:
+        directory(entry)
+        if relocated and entry.name==RECORDS_GUARD: continue
+        p.need(p.UUID.fullmatch(entry.name),'legacy_operation_name')
+        p.need((entry/'complete.json').exists(),'another_operation_pending')
+        intent_raw=read(entry/'intent.json'); complete_raw=read(entry/'complete.json')
+        intent=p.decode(intent_raw); complete=p.decode(complete_raw)
+        p.need(isinstance(intent,dict) and set(intent)=={'planSHA256','staging'} and
+               isinstance(intent['planSHA256'],str) and p.HEX.fullmatch(intent['planSHA256']) and
+               isinstance(intent['staging'],str) and Path(intent['staging']).is_absolute(),'legacy_intent')
+        p.need(isinstance(complete,dict) and complete.get('planSHA256')==intent['planSHA256'] and
+               (set(complete)=={'planSHA256'} or (set(complete)=={'planSHA256','outcome','abortSHA256'} and
+                complete['outcome']=='aborted' and isinstance(complete['abortSHA256'],str) and
+                p.HEX.fullmatch(complete['abortSHA256']))),'legacy_completion')
+        if 'abortSHA256' in complete:
+            p.need(p.sha(read(entry/'aborted.json'))==complete['abortSHA256'],'legacy_abort_changed')
+        history[entry.name]={'intentSHA256':p.sha(intent_raw),'completeSHA256':p.sha(complete_raw)}
+    return p.sha(p.encoded(history))
+
+
+def records_identity(lab, root, history):
+    directory(root)
+    p.need(root.parent==Path('/tmp').resolve() and root.name.startswith(RECORDS_PREFIX) and
+           len(root.name)>len(RECORDS_PREFIX),'records_root_boundary')
+    info=root.stat()
+    return {'format':1,'labRoot':str(lab),'recordsRoot':str(root),
+            'device':info.st_dev,'inode':info.st_ino,'legacySHA256':history}
+
+
+def prepare_records(args):
+    p.need(args.apply and args.records_root is not None,'explicit_records_apply_required')
+    home=args.lab_root/'.lab/dashboard'; parent=home/'dependency-fault-operations'
     if not parent.exists(): directory(parent,create=True)
+    p.need(not os.path.lexists(home/RECORDS_BINDING) and not os.path.lexists(parent/RECORDS_GUARD),
+           'records_already_bound_or_pending')
+    history=legacy_history(parent)
+    value=records_identity(args.lab_root,args.records_root,history)
+    p.need(not any(args.records_root.iterdir()),'records_root_not_empty')
+    # The old driver rejects this unfinished directory. Publish it before the
+    # binding so neither old nor new code can start after an interrupted setup.
+    guard=parent/RECORDS_GUARD; directory(guard,create=True)
+    save(guard/'binding.json',value)
+    save(home/RECORDS_BINDING,value)
+    return {'prepared':True,'guestMutations':False,'bindingSHA256':p.sha(p.encoded(value)),
+            'recordsRoot':str(args.records_root)}
+
+
+def records_parent(lab):
+    home=lab/'.lab/dashboard'; parent=home/'dependency-fault-operations'
+    if not parent.exists(): directory(parent,create=True)
+    if not os.path.lexists(home/RECORDS_BINDING):
+        p.need(not os.path.lexists(parent/RECORDS_GUARD),'records_setup_incomplete')
+        return parent
+    value=p.decode(read(home/RECORDS_BINDING))
+    fields={'format','labRoot','recordsRoot','device','inode','legacySHA256'}
+    p.need(isinstance(value,dict) and set(value)==fields and type(value['format']) is int and
+           value['format']==1 and all(type(value[k]) is int for k in ('device','inode')) and
+           isinstance(value['recordsRoot'],str) and isinstance(value['legacySHA256'],str) and
+           p.HEX.fullmatch(value['legacySHA256']),'records_binding_shape')
+    root=Path(value['recordsRoot']); expected=records_identity(lab,root,legacy_history(parent,True))
+    p.need(value==expected,'records_binding_changed')
+    guard=parent/RECORDS_GUARD; directory(guard)
+    p.need({x.name for x in guard.iterdir()}=={'binding.json'} and
+           p.decode(read(guard/'binding.json'))==value,'records_guard_changed')
+    return root
+
+
+def operation_record(args,plan,begin=False):
+    parent=records_parent(args.lab_root)
     directory(parent); entries=list(parent.iterdir()); p.need(len(entries)<=128,'operation_history_bound')
     for entry in entries:
         directory(entry)
@@ -194,11 +271,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase',choices=PHASES); parser.add_argument('--lab-root',type=Path,required=True)
     parser.add_argument('--staging',type=Path); parser.add_argument('--snapshot',type=Path); parser.add_argument('--output',type=Path)
+    parser.add_argument('--records-root',type=Path)
     parser.add_argument('--revision'); parser.add_argument('--scenario',choices=p.SCENARIOS); parser.add_argument('--fault',choices=p.FAULTS)
     parser.add_argument('--expected-plan-sha256'); parser.add_argument('--expected-implementation-sha256'); parser.add_argument('--apply',action='store_true')
     args=parser.parse_args(); p.need(args.lab_root.is_absolute() and args.lab_root.resolve()==args.lab_root,'lab_root')
     with locked(args.lab_root):
-        result=snapshot(args) if args.phase=='snapshot' else prepare(args) if args.phase=='prepare' else phase(args)
+        result=prepare_records(args) if args.phase=='prepare-records' else snapshot(args) if args.phase=='snapshot' else prepare(args) if args.phase=='prepare' else phase(args)
     sys.stdout.buffer.write(p.encoded(result))
 
 

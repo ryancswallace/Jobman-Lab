@@ -1,6 +1,7 @@
 # Isolated hard-NFS reader acceptance
 
-This opt-in test is not yet live acceptance evidence. It exercises the production
+This opt-in test passed live on October4; exact evidence and limits are recorded
+below. It exercises the production
 `ProcessReader` and exact packaged `jobman-log-broker --isolated-chunk-read`
 against the existing storage01 NFS export, as UID/GID 21901. It does not exercise
 broker HTTP authorization or claim APNs/device acceptance.
@@ -141,3 +142,11 @@ No namespace is eligible for another operation until its `closed.json` exists.
 Artifacts, failed outputs, timer/unit receipts, originals, and exact checksum
 proofs remain in place. Closing does not delete evidence or modify the original
 chunks.
+
+## Accepted isolated run — October 4
+
+Operation `2f13a939-17f8-410e-ace0-b8d4c5df5480` completed stage/start/arm/probe/close with independently reviewed plan `eb2b5e3241c349f13903a087fc9ab5030a330da8a5ce9c50d40902b6e50f0250` and implementation `c8c06805ff58ed538d761a1576c8dc1fc74bc49ee3372372d255ff9f97546c2f`. The rc.5 broker and twice-identical probe use the reviewed output-bound repair. Both actual chunks were independently read as UID21901 before admission; their producer sequence starts at1. Earlier proposed sequence0 inputs remain retained as an invalid offline preparation and were never used for a fault.
+
+The real NFS READ was held; the reader returned read_timeout with no bytes in2001ms and retained its occupied slot at the observed deadline. A competing read was rejected. After forwarding resumed, actual child reaping and exact20/87-byte checksum recovery passed. The independent watchdog completed, no child remained, and ordinary private unmount/closure passed. Main service/process/configuration/source/schema/hold state and shared mounts/exports remained unchanged. This does not claim that the kernel wait was intrinsically unkillable.
+
+Private consolidated evidence: `/private/tmp/jobman-dashboard-hard-nfs-v1-nqz4uxm3/accepted-proof.json`, SHA256 `2618ea330a22175575e216ff9646e7fff37fbf08683cb46543fcd00671be693a`. Bounded probe-log SHA256 `cc07c6276a0f3607cad71b7bd64e5316c4c8db0aeac02d6dd24aab14a5658c47`. No workload log contents are included in the receipt.

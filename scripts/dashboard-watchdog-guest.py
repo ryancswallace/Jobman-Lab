@@ -2,6 +2,7 @@
 """Timer-only primary restart acceptance. No clone, backup, restore, or SQL writes."""
 import base64
 import contextlib
+import datetime as dt
 import fcntl
 import os
 from pathlib import Path
@@ -40,11 +41,31 @@ SELECT NOT EXISTS(SELECT FROM dashboard_report_tasks WHERE state IN('queued','co
 COMMIT;"""
     p.need(r.sql(query)=='t','pending_work');return True
 
+def postgres_process(value):
+    # Podman's Go-template formatter may print Go Time.String rather than
+    # RFC3339. Validate either exact format; retain every original byte for
+    # the before/after process identity (including nanoseconds and zone).
+    common=r'([1-9][0-9]{0,9}) ([0-9]{4}-[0-9]{2}-[0-9]{2})'
+    clock=r'([0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?'
+    iso=re.fullmatch(common+'T'+clock+r'(Z|[+-][0-9]{2}:[0-9]{2})',value)
+    go=re.fullmatch(common+' '+clock+r' ([+-][0-9]{4}) ([A-Za-z]{1,10})',value)
+    match=iso or go
+    p.need(match is not None and int(match[1])<=2147483647,'postgres_process')
+    offset=match[5]
+    if go:offset=offset[:3]+':'+offset[3:]
+    if offset=='Z':offset='+00:00'
+    p.need(int(offset[1:3])<=23 and int(offset[4:6])<=59,'postgres_process')
+    fraction=('.'+match[4][:6].ljust(6,'0')) if match[4] else ''
+    try:parsed=dt.datetime.fromisoformat(match[2]+'T'+match[3]+fraction+offset)
+    except ValueError:raise p.Failure('postgres_process') from None
+    p.need(parsed.utcoffset() is not None,'postgres_process')
+    return value
+
 def snapshot(host,candidate):
     guard(host)
     if host=='pg01':
         process=g.run(['podman','inspect','--format','{{.State.Pid}} {{.State.StartedAt}}','jobman-postgres'],'postgres_process',maximum=1024).decode().strip()
-        p.need(re.fullmatch(r'[1-9][0-9]* [0-9TZ:.+\-]+',process),'postgres_process')
+        postgres_process(process)
         return {'host':host,'observedAt':int(time.time()),'database':g.database(),'retained':r.retained_identities('jobman_dashboard'),
                 'quiet':quiet_database(),'postgresProcess':process,'bootId':r.boot_id()}
     result={'host':host,'observedAt':int(time.time()),'preserved':g.host_snapshot(host,candidate['revision'])}

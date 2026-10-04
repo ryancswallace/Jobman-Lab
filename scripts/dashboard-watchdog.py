@@ -48,7 +48,7 @@ def remote(lab,value,hashes):
     result=p.decode(raw);p.need(result.get('ok') is True,'guest_failed');return result['result']
 
 def no_other_operations(lab):
-    directory=lab/'.lab/dashboard/dependency-fault-operations'
+    directory=h.records_parent(lab)
     if directory.exists():
         h.directory(directory);entries=list(directory.iterdir());p.need(len(entries)<=128,'operation_bound')
         for entry in entries:
