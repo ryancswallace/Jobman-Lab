@@ -21,6 +21,8 @@ COMMON_SHA = 'deb95b8dc32334cddcbcb2f7c1d24584d43de699212f26661c24499339b8cecb'
 NAMESPACES = {'primary':'4156b832-9be8-40ff-a471-cb3061b6001d', 'secondary':'455525f6-5d8a-4d4f-bea3-2d3f1ed4698f'}
 SOURCE_SHA = '7faac82263dfa281d2fec7c3e8a52a55a121294e39e7e2d1706115751d4a2123'
 RECEIPT = re.compile('[0-9a-f]{32}\\Z')
+HOST_RECEIPT_PARENT = Path('/private/tmp')
+RETAINED_RECEIPTS = frozenset(('7ae1782e0d424061e8f056f7d4dde9bf','ecf5578b777a10c0a997e3a15218fcfb','63861951db782332bb16cc5f58a0a5d6','28bd57c3d4a8d292c37c0b1d1520c821','8281f530b049327cf138cfeabd32f268','e406f287dc15461d0d79351de1d5485c'))
 
 
 STAGES=frozenset(('host_input','host_transport','host_decode','host_validate','host_receipt','guest_preflight','guest_material','helper_run','guest_cleanup','guest_postflight','guest_barrier'))
@@ -207,17 +209,35 @@ def _guest(c,payload):
 '''
 
 
+def host_receipt_directory(c,state,profile,receipt,action,explicit):
+ # Public synthetic receipts alone may use this explicit local store. Source
+ # roots, SSH inventory, credentials and remote payloads remain unchanged.
+ c.need(profile in c.PROFILES and RECEIPT.fullmatch(receipt),'explicit_scenario_required')
+ if explicit is not None:
+  directory=Path(explicit)
+  c.need(str(directory)==explicit and directory.parent==HOST_RECEIPT_PARENT and re.fullmatch(r'jobman-dashboard-notification-receipts-[A-Za-z0-9_-]{1,64}',directory.name),'host_receipt_root')
+  c.directory(directory) # Pre-created owner0700 real directory; never chmod/adopt.
+  c.need(receipt not in RETAINED_RECEIPTS,'retained_scenario_excluded')
+ else:
+  directory=state/'multisource-notifications';c.directory(directory,create=True)
+ directory=directory/profile;c.directory(directory,create=True)
+ if explicit is not None and action=='prepare':
+  c.need(not any(directory.glob(receipt+'*.json')),'new_receipt_required')
+ return directory
+
+
 def main():
  with at_stage('host_input'):return _main()
 
 def _main():
  parser=argparse.ArgumentParser(description=__doc__)
  parser.add_argument('profile',choices=('primary','secondary'));parser.add_argument('action',choices=('prepare','complete','settled'));parser.add_argument('receipt');parser.add_argument('case',nargs='?',choices=('first','stopped'))
+ parser.add_argument('--host-receipt-root',help='Pre-created private /private/tmp receipt directory for new scenarios only')
  args=parser.parse_args();c,common_raw=common_module()
  c.need(RECEIPT.fullmatch(args.receipt) and (args.action=='prepare' and args.case is None or args.action!='prepare' and args.case is not None),'explicit_scenario_required')
  root=Path(__file__).resolve().parent.parent;state=root/'.lab/dashboard'
  connections=c.decode(c.read(state/'ssh-connections.json'))
- directory=state/'multisource-notifications';c.directory(directory,create=True);directory=directory/args.profile;c.directory(directory,create=True)
+ directory=host_receipt_directory(c,state,args.profile,args.receipt,args.action,args.host_receipt_root)
  path=directory/(args.receipt+'.json');payload={'profile':args.profile,'action':args.action,'receipt':args.receipt,'case':args.case}
  if args.action!='prepare':payload['fixture']=validate_fixture(c,c.decode(c.read(path,8192)),args.profile,args.receipt)
  if args.action=='settled':payload['event']=validate_event(c,c.decode(c.read(directory/(args.receipt+'-'+args.case+'.json'),8192)),payload['fixture'],args.case)

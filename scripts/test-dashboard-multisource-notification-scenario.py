@@ -231,6 +231,60 @@ class TwoSourceNotificationTests(unittest.TestCase):
     with self.assertRaisesRegex(h.ScenarioFailure,'common_file_changed'):
      with h.at_stage('host_receipt'):c.read(path)
 
+ def test_explicit_private_receipt_root_preserves_strict_guards_and_new_only(self):
+  self.assertEqual(h.HOST_RECEIPT_PARENT,Path('/private/tmp'))
+  with tempfile.TemporaryDirectory() as name:
+   base=Path(name).resolve();root=base/'jobman-dashboard-notification-receipts-test';root.mkdir(mode=0o700)
+   state=base/'unused-lab-state'
+   with patch.object(h,'HOST_RECEIPT_PARENT',base):
+    for profile in c.PROFILES:
+     directory=h.host_receipt_directory(c,state,profile,'a'*32,'prepare',str(root))
+     value=fixture(profile);payload={'profile':profile,'action':'prepare','receipt':'a'*32,'case':None};path=directory/('a'*32+'.json')
+     h.retain_result(c,value,payload,path,directory)
+     self.assertEqual(c.read(path),c.encoded(value))
+     with self.assertRaisesRegex(c.Failure,'new_receipt_required'):h.host_receipt_directory(c,state,profile,'a'*32,'prepare',str(root))
+     self.assertEqual(h.host_receipt_directory(c,state,profile,'a'*32,'complete',str(root)),directory)
+     payload.update(action='complete',case='first',fixture=value)
+     h.retain_result(c,event(profile),payload,path,directory);h.retain_result(c,event(profile),payload,path,directory)
+     link=directory/'synthetic-extra-link';os.link(path,link)
+     with self.assertRaisesRegex(c.Failure,'file_identity'):c.read(path)
+     link.unlink();self.assertEqual(c.read(path),c.encoded(value))
+     for old in h.RETAINED_RECEIPTS:
+      for action in ('prepare','complete','settled'):
+       with self.subTest(receipt=old,action=action),self.assertRaisesRegex(c.Failure,'retained_scenario_excluded'):h.host_receipt_directory(c,state,profile,old,action,str(root))
+    self.assertFalse(state.exists())
+    for candidate in ('relative',str(base),str(root)+'/../'+root.name,str(base/'wrong-name'),str(base/'jobman-dashboard-notification-receipts-absent')):
+     with self.subTest(path=candidate),self.assertRaises((c.Failure,FileNotFoundError)):h.host_receipt_directory(c,state,'primary','b'*32,'prepare',candidate)
+    alias=base/'jobman-dashboard-notification-receipts-alias';alias.symlink_to(root,target_is_directory=True)
+    with self.assertRaisesRegex(c.Failure,'directory_identity'):h.host_receipt_directory(c,state,'primary','b'*32,'prepare',str(alias))
+    root.chmod(0o750)
+    with self.assertRaisesRegex(c.Failure,'directory_identity'):h.host_receipt_directory(c,state,'primary','b'*32,'prepare',str(root))
+    root.chmod(0o700)
+    actual=Path.lstat
+    def wrong_owner(path):
+     result=actual(path)
+     return types.SimpleNamespace(st_mode=result.st_mode,st_uid=os.getuid()+1)
+    with patch.object(Path,'lstat',wrong_owner),self.assertRaisesRegex(c.Failure,'directory_identity'):h.host_receipt_directory(c,state,'primary','b'*32,'prepare',str(root))
+
+ def test_explicit_root_flag_never_enters_guest_payload_or_inventory_paths(self):
+  with tempfile.TemporaryDirectory() as name:
+   base=Path(name).resolve();root=base/'jobman-dashboard-notification-receipts-flow';root.mkdir(mode=0o700)
+   lab_state=HERE.parent/'.lab/dashboard';read=c.read
+   connection={'ansible_ssh_private_key_file':'/synthetic/key','ansible_port':22,'ansible_user':'vagrant','ansible_host':'127.0.0.1'}
+   def input_read(path,*args,**kwargs):
+    if path==lab_state/'ssh-connections.json':return c.encoded({'control01':connection,'pg01':connection})
+    return read(path,*args,**kwargs)
+   def transport(args,payload,**kwargs):
+    value=c.decode(payload);self.assertNotIn('hostReceiptRoot',value);self.assertNotIn(str(root),args)
+    self.assertIn('UserKnownHostsFile='+str(lab_state/'known_hosts'),args)
+    return c.encoded(fixture() if value['action']=='prepare' else event())
+   with patch.object(h,'HOST_RECEIPT_PARENT',base),patch.object(c,'read',side_effect=input_read),patch.object(h,'common_module',return_value=(c,b'fixed-common')),patch.object(c,'run',side_effect=transport) as run,patch.object(h.sys,'stdout',types.SimpleNamespace(buffer=__import__('io').BytesIO())):
+    for action in ('prepare','complete','complete'):
+     args=['scenario','primary',action,'a'*32]+([] if action=='prepare' else ['first'])+['--host-receipt-root',str(root)]
+     with patch.object(h.sys,'argv',args):h.main()
+    self.assertEqual(run.call_count,3)
+    self.assertEqual(c.read(root/'primary'/('a'*32+'-first.json')),c.encoded(event()))
+
  def test_host_receipt_failure_preserves_existing_bytes_and_success_shape(self):
   with tempfile.TemporaryDirectory() as name:
    directory=Path(name).resolve();path=directory/'fixture.json';payload={'profile':'primary','action':'complete','receipt':'a'*32,'case':'first','fixture':fixture()};result=event()
