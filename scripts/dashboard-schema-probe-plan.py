@@ -118,8 +118,11 @@ def validate(plan):
 def refusal(returncode,raw,elapsed):
     need(returncode==1 and 0<=elapsed<=15 and 0<len(raw)<=65536,'startup_did_not_refuse')
     text=raw.decode('utf-8',errors='strict')
-    # Exact error value inside the standard one-line slog frame; do not mistake
-    # an unrelated DB/config/permission failure for schema compatibility proof.
-    need(len(text.splitlines())==1 and 'msg="dashboard stopped"' in text and
-         'error="'+ERROR+'"' in text,'schema_refusal_reason')
+    # main uses slog's default handler (the standard logger's date/time frame).
+    # Also retain the explicit TextHandler form; require the whole exact line.
+    stamp=r'[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}'
+    instant=r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})'
+    default=stamp+r' ERROR dashboard stopped error="'+re.escape(ERROR)+r'"\n'
+    explicit=r'time='+instant+r' level=ERROR msg="dashboard stopped" error="'+re.escape(ERROR)+r'"\n'
+    need(re.fullmatch(default,text) is not None or re.fullmatch(explicit,text) is not None,'schema_refusal_reason')
     return {'refused':True,'exitCode':1,'reason':'schema_version','elapsedSeconds':round(elapsed,6),'logSHA256':sha(raw)}

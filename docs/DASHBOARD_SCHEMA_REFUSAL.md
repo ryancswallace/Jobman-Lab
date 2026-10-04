@@ -51,7 +51,9 @@ its source endpoints to distinct loopback ports48445 onward and its OIDC
 endpoint to loopback48445. The existing certificate
 still identifies the unchanged `dashboard.lab.test` public hostname. Local
 `check-config` must pass before the negative test. The product must reject the
-schema before any listener or background work starts; an unrelated configuration,
+schema before any listener or background work starts. The refusal parser accepts
+the exact default Go logger frame emitted by `slog.Error` and the explicit
+TextHandler frame, with the complete fixed schema-version error and no extra fields; an unrelated configuration,
 permission, connection or identity error does not count as refusal evidence.
 
 The operator must coordinate an otherwise quiet Lab window. Read-only snapshots

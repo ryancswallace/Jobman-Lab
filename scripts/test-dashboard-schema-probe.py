@@ -184,6 +184,16 @@ class SchemaProbeTests(unittest.TestCase):
                 (1,raw.replace(p.ERROR.encode(),b'permission denied'),1),(1,b'x'*65537,1)):
             with self.assertRaises(ValueError):p.refusal(code,output,elapsed)
 
+    def test_default_go_logger_frame_requires_exact_error_and_no_extra_fields(self):
+        raw=('2026/10/04 15:44:01 ERROR dashboard stopped error="'+p.ERROR+'"\n').encode()
+        self.assertEqual(p.refusal(1,raw,0.2)['logSHA256'],p.sha(raw))
+        for changed in (raw.replace(b' ERROR ',b' INFO '),raw.replace(b'dashboard stopped',b'worker stopped'),
+                        raw.replace(p.ERROR.encode(),b'connection refused'),b'prefix '+raw,
+                        raw.rstrip()+b' extra=true\n',raw+b'\n',raw.replace(b'error=',b'previous_error=')):
+            with self.assertRaisesRegex(ValueError,'schema_refusal_reason'):p.refusal(1,changed,0.2)
+        explicit=('time=2026-10-04T15:44:01.123456789+02:00 level=ERROR msg="dashboard stopped" error="'+p.ERROR+'"\n').encode()
+        self.assertTrue(p.refusal(1,explicit,0.2)['refused'])
+
     def test_empty_database_rejects_function_type_and_extension_drift(self):
         value=dict(relations=0,schemas=0,routines=0,types=0,extensions=0,owner=p.ROLES['ddl'])
         with patch.object(g,'sql',return_value=p.encoded(value).decode()) as sql:
@@ -245,7 +255,7 @@ class SchemaProbeTests(unittest.TestCase):
         def local(args,**kw):
             for field in ('user','group','extra_groups'):kw.pop(field,None)
             return popen(args,**kw)
-        raw='time=x level=ERROR msg="dashboard stopped" error="'+p.ERROR+'"\n'
+        raw='time=2026-10-04T01:00:00Z level=ERROR msg="dashboard stopped" error="'+p.ERROR+'"\n'
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.subprocess,'Popen',side_effect=local):
             root=Path(tmp)
             code,out,elapsed=g.captured([sys.executable,'-c','import sys;sys.stderr.write('+repr(raw)+');sys.exit(1)'],os.getuid(),root,'actual')
@@ -280,7 +290,7 @@ class SchemaProbeTests(unittest.TestCase):
             self.assertTrue((Path(tmp)/'refuse-api.pending.json').exists());self.assertFalse((Path(tmp)/'refuse.json').exists())
 
     def test_runtime_arguments_have_no_ddl_or_secrets(self):
-        plan=fixture();raw=('time=x msg="dashboard stopped" error="'+p.ERROR+'"\n').encode()
+        plan=fixture();raw=('time=2026-10-04T01:00:00Z level=ERROR msg="dashboard stopped" error="'+p.ERROR+'"\n').encode()
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as tmp,patch.object(g.g,'verify_release',return_value='/pinned/binary'),\
              patch.object(g,'artifacts',return_value={'safe':'a'*64}),patch.object(g,'captured',return_value=(1,raw,.1)) as called,patch.object(g.socket,'socket'):
             result=g.product(plan,Path(tmp),'refuse');self.assertEqual(set(result['processes']),{'api','worker'})
