@@ -310,4 +310,3 @@ def database():
     value = p.decode(r.run(args, 'database_snapshot', input_data=DATABASE_SQL.encode(), timeout=15, maximum=2 << 20))
     roles = value.pop('roleProof'); r.need(len(roles['roles']) == 4, 'database_roles_missing')
     value['rolesSHA256'] = r.sha(r.encoded(roles)); return p.stable_database(value)
-
