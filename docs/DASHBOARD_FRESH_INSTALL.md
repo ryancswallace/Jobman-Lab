@@ -326,3 +326,25 @@ a successfully completed, stopped installation and preserves that accepted
 installation while testing a separately named probe database. A failed or merely
 aborted installation cannot authorize this follow-on. No schema-refusal result is
 claimed here.
+
+## Runtime directories during a compatible transition
+
+A normal stop removes each unit's systemd `RuntimeDirectory`. Before a manual
+API `check-config`, the installer must recreate the two exact own socket-parent
+directories with their planned owner/group and mode0700. Existing paths are
+validated strictly; a changed mode/owner, symlink or regular file is refused and
+never repaired. This preflight runs for baseline, upgrade and rollback after the
+pair is confirmed stopped, before local validation or any start request.
+
+The stopped v2 attempt exposed this ordering error: its configuration and real
+schema checks passed, while API validation rejected the absent observation socket
+parent; worker validation passed because it has no static-web boundary. The
+read-only confirmation and original failed one-shot/stop/disabled-client receipts
+remain evidence of a failed attempt. The corrected future driver does not replay
+that operation or create its missing completion. A continuation requires its own
+reviewed scope and must distinguish retained-data checks from unperformed
+session/whole-scenario acceptance.
+
+The integration runner reports only fixed phase/error codes for recognized
+installer failures. Unknown, oversized or extra subprocess diagnostics stay
+unclassified; private stderr and exception values are not printed.

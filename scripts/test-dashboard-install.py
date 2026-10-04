@@ -2,6 +2,7 @@
 """Offline regression tests; no SSH, database, identity or service invocation."""
 import base64
 import copy
+from contextlib import ExitStack
 import importlib.util
 import os
 from pathlib import Path
@@ -356,6 +357,68 @@ class InstallTests(unittest.TestCase):
             changed=dict(expected);changed[key]=value
             with patch.object(g,'sql',return_value=p.encoded(changed)):
                 with self.assertRaisesRegex(ValueError,'fresh_database_not_empty'):g.empty_database()
+
+    def test_runtime_directory_recreates_only_absent_private_parent(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as name:
+            root=Path(name);path=root/'runtime';uid,gid=os.getuid(),os.getgid()
+            previous=os.umask(0o077)
+            try:g.runtime_directory(path,uid,gid)
+            finally:os.umask(previous)
+            row=path.lstat();self.assertEqual((row.st_uid,row.st_gid,row.st_mode&0o777),(uid,gid,0o700))
+            before=(row.st_ino,row.st_ctime_ns);g.runtime_directory(path,uid,gid)
+            row=path.lstat();self.assertEqual((row.st_ino,row.st_ctime_ns),before)
+            path.chmod(0o750)
+            with self.assertRaisesRegex(ValueError,'directory_identity'):g.runtime_directory(path,uid,gid)
+            self.assertEqual(path.stat().st_mode&0o777,0o750)
+            alias=root/'alias';alias.symlink_to(path,target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'directory_identity'):g.runtime_directory(alias,uid,gid)
+            wrong=root/'file';wrong.write_bytes(b'preserved');wrong.chmod(0o700)
+            with self.assertRaisesRegex(ValueError,'directory_identity'):g.runtime_directory(wrong,uid,gid)
+            self.assertEqual(wrong.read_bytes(),b'preserved')
+
+    def test_runtime_parent_selection_is_exact_for_both_finite_scopes(self):
+        for scope in ('v1','v2'):
+            q=load('dashboard-install-plan',{'SCOPE':scope});guest=load('dashboard-install-guest',{'p':q})
+            with patch.object(guest,'runtime_directory') as call:
+                guest.runtime_directories()
+                self.assertEqual(call.call_args_list,[unittest.mock.call(Path('/run')/q.UNITS[role],uid,uid) for role,(_,uid) in q.USERS.items()])
+
+    def test_every_activation_prepares_runtime_after_stop_before_validation(self):
+        for phase in ('baseline','upgrade','rollback'):
+            plan=fixture();seen=[];ready=[False]
+            def run(args,code,**kwargs):
+                seen.append(code)
+                if args[:2]==['systemctl','stop']:ready[0]=False
+                if '--mode' in args and 'check-config' in args:
+                    self.assertTrue(ready[0]);self.assertIn(code,('install_api_local_validation','install_worker_local_validation'))
+                return b'{}'
+            def prepare():seen.append('runtime');ready[0]=True
+            with ExitStack() as stack:
+                for name in ('replace','stopped','process','ready'):
+                    stack.enter_context(patch.object(g,name,side_effect=(lambda:seen.append('stopped')) if name=='stopped' else None))
+                stack.enter_context(patch.object(g,'begin',return_value=Path('/private/operation')))
+                stack.enter_context(patch.object(g,'own_configuration',return_value='/exact/binary'))
+                stack.enter_context(patch.object(g,'runtime_directories',side_effect=prepare))
+                stack.enter_context(patch.object(g,'tree',return_value='a'*64))
+                finish=stack.enter_context(patch.object(g,'finish',return_value={'completed':True}))
+                stack.enter_context(patch.object(g.f,'run',side_effect=run))
+                self.assertEqual(g.activate(plan,phase),{'completed':True})
+                self.assertLess(seen.index('stopped'),seen.index('runtime'))
+                self.assertLess(seen.index('runtime'),seen.index('install_api_local_validation'))
+                self.assertLess(seen.index('install_worker_local_validation'),seen.index('install_start_api'))
+                self.assertEqual(finish.call_count,1)
+
+    def test_runtime_identity_failure_never_starts_service(self):
+        plan=fixture();calls=[]
+        with ExitStack() as stack:
+            for name in ('replace','stopped','process'):stack.enter_context(patch.object(g,name))
+            stack.enter_context(patch.object(g,'begin',return_value=Path('/private/operation')))
+            stack.enter_context(patch.object(g,'own_configuration',return_value='/exact/binary'))
+            stack.enter_context(patch.object(g,'runtime_directories',side_effect=p.b.Failure('directory_identity')))
+            stack.enter_context(patch.object(g.f,'run',side_effect=lambda args,*a,**k:calls.append(args) or b'{}'))
+            finish=stack.enter_context(patch.object(g,'finish'))
+            with self.assertRaisesRegex(ValueError,'directory_identity'):g.activate(plan,'upgrade')
+            self.assertFalse(any(args[:2]==['systemctl','start'] for args in calls));finish.assert_not_called()
 
     def test_bootstrap_compile_only(self):
         compile(h.BOOTSTRAP,'bootstrap','exec')

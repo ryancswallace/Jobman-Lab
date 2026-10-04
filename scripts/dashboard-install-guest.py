@@ -636,6 +636,20 @@ def ready(plan, selected, seconds=25):
     raise p.b.Failure('install_not_ready')
 
 
+def runtime_directory(path, uid, gid):
+    # A normal systemd stop removes RuntimeDirectory by default. Manual
+    # check-config still verifies that the private socket parent resolves.
+    # Create only an absent exact own path; never repair a preexisting path.
+    try: Path(path).lstat()
+    except FileNotFoundError: directory(path, uid, gid, create=True)
+    else: directory(path, uid, gid)
+
+
+def runtime_directories():
+    for role, (_, uid) in p.USERS.items():
+        runtime_directory(Path('/run')/p.UNITS[role], uid, uid)
+
+
 def activate(plan, phase):
     p.need(phase in ('baseline','upgrade','rollback'), 'activation_phase')
     selected = 'upgrade' if phase == 'upgrade' else 'baseline'
@@ -656,13 +670,14 @@ def activate(plan, phase):
                 phase+'-api-config',uid=p.USERS['api'][1])
         f.run(['systemctl','daemon-reload'], 'transition_daemon_reload', timeout=10)
     binary = own_configuration(plan, selected)
+    runtime_directories()
     # Both packaged binaries must independently accept the exact real ledger.
     status = p.decode(f.run([binary,'status','--operator-config',str(ROOTS['operator']/'config.json')],
                            'install_schema_check',timeout=15,maximum=65536))
     p.need(isinstance(status,dict), 'install_status_shape')
     for role,(user,_) in p.USERS.items():
         f.run(['runuser','-u',user,'--',binary,'--mode','check-config','--check-mode',role,'--config',str(ROOTS[role]/'config.json')],
-              'install_local_validation',timeout=10,maximum=8192)
+              'install_'+role+'_local_validation',timeout=10,maximum=8192)
     # Start API before worker so it persists fresh source identities first.
     f.run(['systemctl','start',p.UNITS['api']], 'install_start_api',timeout=15)
     f.run(['systemctl','start',p.UNITS['worker']], 'install_start_worker',timeout=15)
