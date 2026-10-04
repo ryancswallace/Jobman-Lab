@@ -407,4 +407,39 @@ class Candidate(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError): p.stable_database(value)
 
 
+
+    def test_stage_runs_actual_bounded_transport_for_database_check(self):
+        from argparse import Namespace
+        plan = copy.deepcopy(self.plan); digest = p.sha(p.encoded(plan))
+        for host in p.HOSTS:
+            self.save('preflight-' + host + '.json', {'planSHA256': digest, 'preflightAt': int(time.time())})
+        archive = b'synthetic archive for host transport regression'
+        (self.root / 'candidate.tar.gz').write_bytes(archive); (self.root / 'candidate.tar.gz').chmod(0o600)
+        parent = self.root / '.lab/dashboard'; parent.mkdir(parents=True); parent.chmod(0o700)
+        trace = self.root / 'transport-phases.jsonl'
+        # Real bounded r.run, selector input/output and failure-code validation.
+        # Only the ssh executable is replaced by a local Python fixture; remote()
+        # still serializes and hashes the actual reviewed modules.
+        fixture = "import json,sys;from pathlib import Path;v=json.load(sys.stdin);" + \
+                  "p=Path(sys.argv[1]);f=p.open('a');f.write(json.dumps({'phase':v['phase'],'host':v['host']})+'\\n');f.close();" + \
+                  "print(json.dumps({'ok':True,'result':{'planSHA256':v['planSHA256'],'phase':v['phase']}}))"
+        args = Namespace(staging=self.root, phase='stage', host='control01', role=None, expected_plan_sha256=digest,
+                         expected_implementation_sha256='i', lab_root=self.root, apply=True, observe_only=False)
+        hashes = h.implementation()
+        with patch.object(h, 'load_plan', return_value=(plan, hashes)), patch.object(h.p, 'ARCHIVE', p.sha(archive)), \
+             patch.object(h, 'ssh_args', return_value=[sys.executable, '-c', fixture, str(trace)]):
+            result = h.phase(args)
+        self.assertEqual(result['phase'], 'stage')
+        phases = [json.loads(line) for line in trace.read_text().splitlines()]
+        self.assertEqual(phases, [{'phase':'database-check','host':'pg01'}, {'phase':'stage','host':'control01'}])
+        self.assertTrue((self.root / 'stage-control01.pending.json').exists())
+        self.assertTrue((self.root / 'stage-control01.json').exists())
+
+    def test_unknown_internal_phase_is_rejected_before_transport(self):
+        for phase in ('database/check', 'database_check', 'stage;echo', '', None, 'migrate'):
+            with self.subTest(phase=phase), patch.object(h, 'ssh_args') as ssh, self.assertRaisesRegex(ValueError, 'remote_phase_boundary'):
+                h.remote(self.root, {'phase': phase, 'host': 'pg01'}, {})
+            ssh.assert_not_called()
+
+
 if __name__ == '__main__': unittest.main()

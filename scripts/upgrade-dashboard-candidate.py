@@ -114,13 +114,14 @@ except Exception as error:
 
 
 def remote(lab, payload, hashes):
+    r.need(payload.get('phase') in ('snapshot', 'preflight', 'stage', 'apply', 'restart', 'verify', 'database-check'), 'remote_phase_boundary')
     names = ('dashboard-multisource-runtime.py', 'dashboard-split-plan.py', 'dashboard-candidate-plan.py', 'dashboard-candidate-guest.py')
     sources = {name: read(HERE / name, 1 << 20, False).decode() for name in names}
     r.need(all(r.sha(value.encode()) == hashes[name] for name, value in sources.items()), 'remote_implementation_drift')
     body = dict(payload, _sources=sources, _hashes={name: hashes[name] for name in names})
     encoded = r.encoded(body); r.need(len(encoded) <= 40 << 20, 'remote_input_bound')
     raw = r.run(ssh_args(lab, payload['host']) + [shlex.join(['sudo', 'python3', '-c', BOOTSTRAP])],
-                'candidate_remote_' + payload['phase'], input_data=encoded, timeout=180, maximum=4 << 20)
+                'candidate_remote_' + payload['phase'].replace('-', '_'), input_data=encoded, timeout=180, maximum=4 << 20)
     answer = p.decode(raw)
     r.need(answer.get('ok') is True, answer.get('code', 'candidate_remote_failed') if r.CODE.fullmatch(str(answer.get('code', ''))) else 'candidate_remote_failed')
     return answer['result']
