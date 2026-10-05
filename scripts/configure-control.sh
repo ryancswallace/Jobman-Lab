@@ -78,9 +78,8 @@ write_target() {
     --argjson partitions "$partitions" \
     '{apiVersion:"jobman.control/v1alpha1",kind:"Target",metadata:{name:$name},spec:{kind:$kind,executionBackend:$backend,runtimes:["native"],operatingSystems:[$os],architectures:["arm64"],partitions:$partitions,logStore:{name:"lab-nfs",version:1},artifactStores:[{name:"lab-nfs",version:1}],provider:{kind:"on-prem"}}}' \
     > "$control_root/requests/target-$name.json"
-  api_put_or_post POST "/v1/namespaces/research/targets" \
-    "$control_root/requests/target-$name.json" "$control_root/responses/target-$name.json" \
-    "lab-target-$name-v1"
+  python3 "$lab_root/scripts/ensure-control-target.py" "$auth_config" \
+    "$control_root/requests/target-$name.json" "$control_root/responses/target-$name.json"
 }
 
 write_target onprem-slurm slurm slurm linux '[{"name":"cpu","isDefault":true}]'

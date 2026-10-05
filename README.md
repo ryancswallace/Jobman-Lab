@@ -141,6 +141,11 @@ must be discarded.
 dependency first starts or resumes the selected VMs and waits for their Vagrant
 SSH or WinRM communicators before requesting connection configuration.
 
+Target bootstrap first reads each existing target and requires an active target
+with the expected configuration. Matching targets retain their original IDs and
+generations even after Control idempotency receipts expire. Conflicting targets
+stop setup without replacement. Only missing targets are created.
+
 When `make enroll` detects an expired agent certificate or renewable session,
 it stops that agent, renames its state directory with an
 `.expired-<timestamp>` suffix, creates fresh state, and enrolls a replacement
