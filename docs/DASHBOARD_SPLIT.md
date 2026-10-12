@@ -356,3 +356,23 @@ read/unread updates, cross-account denial and immediate rule stop. The public
 scenario and exact event receipts remain under `.lab/dashboard/notifications/`;
 only that scenario's six personal rules were cleaned up. No APNs, physical-phone
 or actual workload execution is claimed by this cancellation scenario.
+
+## Boot persistence
+
+The cutover's stop/hold phase disables and stops the existing application units
+so a guest reboot cannot restart them mid-transition. Forward activation disables
+the retired combined service and enables/starts the API and worker. Rollback
+disables the split services and enables/starts the restored combined service.
+Verification checks both running state and boot enablement.
+
+For a previously completed split whose units were only started, repair its boot
+settings on `storage01` after confirming that the API and worker are the current
+deployment:
+
+```sh
+sudo systemctl disable --now jobman-dashboard-lab-app
+sudo systemctl enable --now jobman-dashboard-lab-api jobman-dashboard-lab-worker
+```
+
+This preserves installed units, drop-ins, configuration, report objects, and
+credentials. Optional restore/install test instances remain disabled.

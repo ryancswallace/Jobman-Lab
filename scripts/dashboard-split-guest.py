@@ -444,7 +444,7 @@ def stop_and_hold(payload, use_new=False):
         # stop also accepts a not-yet-installed unit as a no-op only for the new
         # names; the retained combined unit must exist.
         found=subprocess.run(['systemctl','cat',unit],capture_output=True)
-        if found.returncode==0:run(['systemctl','stop',unit],timeout=100)
+        if found.returncode==0:run(['systemctl','disable','--now',unit],timeout=100)
         else:need(unit!='jobman-dashboard-lab-app','Legacy unit missing')
     stopped()
     legacy='/usr/local/libexec/jobman-dashboard-lab/jobman-dashboard'
@@ -726,6 +726,21 @@ def prepare_runtime_directories():
         directory(Path('/run/jobman-dashboard-'+role+'-lab'),uid,uid,0o700)
 
 
+def start_runtime(rollback=False):
+    # A cutover must persist across guest reboot, including its rollback path.
+    legacy='jobman-dashboard-lab-app'
+    split=['jobman-dashboard-lab-api','jobman-dashboard-lab-worker']
+    if rollback:
+        for unit in split:
+            # Rollback can follow a failure before the split units were installed.
+            if subprocess.run(['systemctl','cat',unit],capture_output=True).returncode==0:
+                run(['systemctl','disable',unit])
+        run(['systemctl','enable','--now',legacy],timeout=30)
+    else:
+        run(['systemctl','disable',legacy])
+        run(['systemctl','enable','--now',*split],timeout=60)
+
+
 def activate(payload,rollback=False):
     plan,root=common(payload,True);stopped()
     assert_stopped_held(dict(payload,schema=18))
@@ -739,7 +754,7 @@ def activate(payload,rollback=False):
         old=old.replace(str(APP/'config.json'),str(path))
         unit=Path('/etc/systemd/system/jobman-dashboard-lab-app.service')
         replace(unit,old.encode(),payload['preflight']['storage01']['unitSHA256'],root/'legacy-unit.before-rollback.service',0,0,0o644)
-        run(['systemctl','daemon-reload']);run(['systemctl','start','jobman-dashboard-lab-app'],timeout=30)
+        run(['systemctl','daemon-reload']);start_runtime(rollback=True)
         return {'rollbackStarted':True,'configurationRevision':plan['rollback']['configurationRevision']}
     prepare_runtime_directories()
     for role in ('api','worker'):
@@ -747,7 +762,7 @@ def activate(payload,rollback=False):
         run(['runuser','-u','jobman-dashboard-'+role,'--',plan['releaseRoot']+'/bin/jobman-dashboard','--mode','check-config','--check-mode',role,'--config',config])
         put(Path('/etc/systemd/system/jobman-dashboard-lab-'+role+'.service'),read(root/'units'/('jobman-dashboard-lab-'+role+'.service')),mode=0o644)
     run(['systemctl','daemon-reload'])
-    for role in ('api','worker'):run(['systemctl','start','jobman-dashboard-lab-'+role],timeout=30)
+    start_runtime()
     active('jobman-dashboard-lab-api','jobman-dashboard-lab-worker')
     put(root/'split-started.json',encoded({'revision':plan['revision'],'held':True}))
     return {'splitStarted':True,'held':True}
@@ -757,6 +772,9 @@ def verify(payload):
     plan,root=common(payload)
     if payload['host']=='storage01':
         active('jobman-dashboard-lab-api','jobman-dashboard-lab-worker')
+        for unit in ('jobman-dashboard-lab-api','jobman-dashboard-lab-worker'):
+            run(['systemctl','is-enabled','--quiet',unit])
+        need(subprocess.run(['systemctl','is-enabled','--quiet','jobman-dashboard-lab-app'],capture_output=True).returncode==1,'Legacy service remains enabled at boot')
         need(subprocess.run(['systemctl','is-active','--quiet','jobman-dashboard-lab-app'],capture_output=True).returncode==3,'Legacy service still active')
         for role in ('api','worker'):
             socket='/run/jobman-dashboard-'+role+'-lab/observe.sock'
