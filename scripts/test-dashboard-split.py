@@ -57,6 +57,26 @@ def inputs():
 
 
 class SplitTests(unittest.TestCase):
+    def test_activation_persists_only_split_services_at_boot(self):
+        with patch.object(guest,'run') as run:
+            guest.start_runtime()
+        commands=[call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands,[
+            ['systemctl','disable','jobman-dashboard-lab-app'],
+            ['systemctl','enable','--now','jobman-dashboard-lab-api','jobman-dashboard-lab-worker']])
+
+    def test_rollback_restores_combined_boot_and_tolerates_missing_split_units(self):
+        for installed in (True,False):
+            with self.subTest(installed=installed), patch.object(guest,'run') as run, \
+                 patch.object(guest.subprocess,'run') as probe:
+                probe.return_value.returncode=0 if installed else 4
+                guest.start_runtime(rollback=True)
+                commands=[call.args[0] for call in run.call_args_list]
+                expected=[['systemctl','disable',unit] for unit in
+                          ('jobman-dashboard-lab-api','jobman-dashboard-lab-worker')] if installed else []
+                expected.append(['systemctl','enable','--now','jobman-dashboard-lab-app'])
+                self.assertEqual(commands,expected)
+
     def test_dynamic_mappings_preserved_and_credentials_separated(self):
         app, broker, fixture = inputs()
         original = copy.deepcopy((app, broker, fixture))
