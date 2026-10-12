@@ -8,6 +8,7 @@ from pathlib import Path
 import pwd
 import subprocess
 import ssl
+import socket
 import time
 import tempfile
 import unittest
@@ -69,14 +70,63 @@ class GatewayTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'address changed'):
                 gateway.preflight(CONFIG)
 
-    def test_stop_targets_only_owned_labels(self):
-        with patch.object(gateway, 'loaded', return_value=True), patch.object(gateway, 'run') as run:
-            run.return_value.returncode = 0
+    def test_stop_targets_only_owned_labels_and_waits_for_their_pids(self):
+        with patch.object(gateway, 'run') as run, patch.object(gateway, 'wait_for_exit') as wait:
+            run.return_value = subprocess.CompletedProcess([], 0, '    pid = 12345\n', '')
             gateway.stop()
-            self.assertEqual(run.call_count, 3)
+            wait.assert_called_once_with([12345, 12345, 12345])
+            self.assertEqual(run.call_count, 6)
             for call in run.call_args_list:
-                self.assertEqual(call.args[0][:2], ['/bin/launchctl', 'bootout'])
+                self.assertIn(call.args[0][1], ('print', 'bootout'))
                 self.assertTrue(call.args[0][2].startswith('system/' + gateway.LABEL + '.'))
+
+    def test_shutdown_waits_for_process_exit_without_signalling_it(self):
+        observations = []
+        def probe(pid, signal):
+            observations.append((pid, signal))
+            if len(observations) == 3:
+                raise ProcessLookupError
+        with patch.object(gateway.os, 'kill', side_effect=probe), \
+             patch.object(gateway.time, 'sleep') as sleep:
+            gateway.wait_for_exit([12345])
+        self.assertEqual(observations, [(12345, 0)] * 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_shutdown_timeout_does_not_report_success_or_kill_another_process(self):
+        with patch.object(gateway.os, 'kill') as kill, \
+             patch.object(gateway.time, 'monotonic', side_effect=[0, 16]):
+            with self.assertRaisesRegex(RuntimeError, 'shutdown timed out'):
+                gateway.wait_for_exit([12345])
+        kill.assert_called_once_with(12345, 0)
+
+    def test_port_probe_rejects_active_tcp_and_udp_listeners(self):
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with self.subTest(kind=kind), socket.socket(socket.AF_INET, kind) as listener:
+                if kind == socket.SOCK_STREAM:
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('127.0.0.1', 0))
+                if kind == socket.SOCK_STREAM:
+                    listener.listen(1)
+                port = listener.getsockname()[1]
+                with self.assertRaisesRegex(RuntimeError, 'is occupied'):
+                    gateway.check_port('127.0.0.1', port, kind)
+
+    def test_port_probe_accepts_tcp_time_wait_after_server_exit(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            address, port = listener.getsockname()
+            with socket.create_connection((address, port), timeout=2) as client:
+                accepted, _ = listener.accept()
+                with accepted:
+                    accepted.settimeout(2)
+                    accepted.shutdown(socket.SHUT_WR)
+                    self.assertEqual(client.recv(1), b'')
+                    client.shutdown(socket.SHUT_WR)
+                    self.assertEqual(accepted.recv(1), b'')
+        # The old server-side connection is in TIME_WAIT, not a live listener.
+        gateway.check_port(address, port, socket.SOCK_STREAM)
 
     def test_idempotent_start_verifies_without_restarting(self):
         account = pwd.getpwuid(os.getuid()).pw_name

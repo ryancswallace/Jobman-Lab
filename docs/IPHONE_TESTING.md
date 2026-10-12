@@ -127,7 +127,12 @@ Root-owned runtime configuration files are regenerated from validated configurat
 at start. Private operational logs belong to the service account so launchd can
 open them after applying its user identity.
 The launcher cleans up jobs on startup failure and serializes management actions;
-launchd restarts a gateway process if it exits unexpectedly.
+launchd restarts a gateway process if it exits unexpectedly. Shutdown waits for
+the recorded gateway processes to exit before returning, so an immediate restart
+cannot race their port release. A 15-second timeout reports a failure rather than
+claiming shutdown completed; only launchd manages termination of its own jobs.
+The startup port check permits normal closed TCP connections in TIME_WAIT while
+continuing to reject active TCP listeners and occupied UDP sockets.
 
 OIDC certificate creation/renewal uses the existing key and CA, explicit
 serverAuth/key usage/SANs, and a 365-day lifetime. Replaced public leaves are
