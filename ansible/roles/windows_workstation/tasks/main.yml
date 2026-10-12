@@ -1,4 +1,10 @@
 ---
+- name: Keep the synthetic Vagrant management account password non-expiring
+  ansible.windows.win_user:
+    name: vagrant
+    password_never_expires: true
+    state: present
+
 - name: Configure the isolated Windows lab interface
   ansible.windows.win_powershell:
     script: |
