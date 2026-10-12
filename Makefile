@@ -44,10 +44,13 @@ image-windows: ## Build the secret-free Windows 11 ARM64 Parallels/Vagrant base 
 build-products: ## Cross-build Jobman, Jobman Agent, and Jobman Control from sibling repos.
 	./scripts/build-products.sh
 
-ensure-running: ## Start or resume selected VMs and wait for Vagrant communicators.
+ensure-vms:
 	./scripts/vagrant-up.sh $(LAB_GROUP)
 
-inventory: ensure-running ## Generate Ansible inventory from config/topology.yml and Vagrant SSH/WinRM data.
+ensure-running: ensure-vms ## Start/resume VMs and the configured iPhone gateway.
+	python3 scripts/iphone-gateway.py start --if-configured
+
+inventory: ensure-vms ## Generate Ansible inventory from config/topology.yml and Vagrant SSH/WinRM data.
 	LAB_GROUP=$(LAB_GROUP) ./scripts/generate-inventory.rb
 
 up: up-full ## Create the full lab.
@@ -58,8 +61,10 @@ up-core: image-linux ## Create Linux core services and compute nodes.
 up-full: images ## Create the complete Linux and Windows topology.
 	$(MAKE) LAB_GROUP=full converge
 
-converge: build-products fetch-artifacts inventory ## Apply all guest configuration idempotently.
+converge: build-products fetch-artifacts inventory ## Apply guest configuration, then start the configured phone gateway.
+	python3 scripts/ensure-oidc-tls.py
 	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/site.yml
+	python3 scripts/iphone-gateway.py start --if-configured
 
 configure-control: ## Create synthetic OIDC realm, namespace, memberships, stores, and targets.
 	./scripts/configure-control.sh
@@ -72,9 +77,11 @@ test: ## Run network, mounts, SSH, Slurm, Control, and end-to-end Jobman checks.
 
 status: ## Show Vagrant and Parallels status for lab VMs.
 	$(VAGRANT_ENV) vagrant status
+	python3 scripts/iphone-gateway.py status --if-configured
 	prlctl list --all --output name,status | awk 'NR == 1 || $$1 ~ /^jobman-lab-/'
 
 halt: ## Gracefully halt lab VMs while retaining state.
+	python3 scripts/iphone-gateway.py stop
 	$(VAGRANT_ENV) vagrant halt
 
 down: halt ## Alias for halt.
@@ -96,3 +103,16 @@ configure-dashboard-source: ## Prepare an isolated source using CONTROL_FIXTURE_
 
 configure-dashboard-runtime: ## Install app/broker using DASHBOARD_BUILD (exact Linux ARM64 executables and web directory).
 	./scripts/configure-dashboard-runtime.sh "$(DASHBOARD_BUILD)"
+
+.PHONY: ensure-vms iphone-start iphone-stop iphone-status iphone-check
+iphone-start: ## Start the configured phone-only gateway in the background (sudo prompt).
+	python3 scripts/iphone-gateway.py start
+
+iphone-stop: ## Stop the phone gateway; restore Automatic DNS on the phone afterward.
+	python3 scripts/iphone-gateway.py stop
+
+iphone-status: ## Show phone gateway configuration and launchd service state.
+	python3 scripts/iphone-gateway.py status --if-configured
+
+iphone-check: ## Verify gateway DNS, TLS, and service readiness.
+	python3 scripts/iphone-gateway.py check

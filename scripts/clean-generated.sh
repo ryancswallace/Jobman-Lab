@@ -14,5 +14,6 @@ fi
   printf 'refusing to remove unexpected state path: %s\n' "$state_root" >&2
   exit 1
 }
+python3 "$lab_root/scripts/iphone-gateway.py" stop
 find "$state_root" -mindepth 1 -delete
 printf 'removed regenerable lab state beneath %s\n' "$state_root"

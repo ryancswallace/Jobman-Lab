@@ -10,4 +10,5 @@ if [[ "${JOBMAN_LAB_CONFIRM_DESTROY:-}" != yes ]]; then
   [[ "$answer" == destroy-jobman-lab ]] || { printf 'destroy cancelled\n'; exit 1; }
 fi
 
+python3 "$lab_root/scripts/iphone-gateway.py" stop
 JOBMAN_LAB_GROUP=full VAGRANT_DEFAULT_PROVIDER=parallels vagrant destroy --force
