@@ -53,6 +53,8 @@ After configuration:
 - `make ensure-running` starts/resumes the existing VMs, then starts/checks the
   gateway. It does not provision a new Dashboard installation.
 - `make halt` / `make down` stop the gateway before halting VMs.
+- `make restart` runs shutdown followed by startup sequentially, including the
+  configured gateway. Use `make LAB_GROUP=full restart` for every Lab VM.
 - Confirmed `make destroy` and `make clean-generated` stop the gateway before
   removing their corresponding state. Canceling confirmation leaves it running.
 - `make iphone-start`, `make iphone-stop`, `make iphone-status`, and

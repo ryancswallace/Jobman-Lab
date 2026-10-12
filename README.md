@@ -133,9 +133,21 @@ make configure-control  # refresh OIDC tokens and replay Control bootstrap
 make enroll             # enroll missing/expired agents and restart services
 make test               # storage, all-pairs SSH, Slurm, Control, Jobman E2E
 make halt               # graceful shutdown, state retained
+make restart            # restart VMs and the configured iPhone gateway
 make up-full             # start/reconcile again
 make destroy            # confirmed removal of Vagrant-managed lab VMs
 ```
+
+The synthetic Windows `vagrant` management account has a non-expiring password,
+matching the long-lived Lab image and the other synthetic Windows users. Only
+this account's expiry flag is set; its password and the machine-wide password
+policy are preserved. New images and Windows provisioning enforce this setting.
+
+For an older running Windows VM that reports `WinRMAuthorizationError` because
+its management password expired, run `make repair-windows-management` once,
+then retry `make restart`. The repair uses Parallels Tools, verifies the exact
+Vagrant VM ID and `jobman-lab-winws01` name, and does not depend on WinRM. To
+inspect without changing anything, run `python3 scripts/repair-windows-management.py`.
 
 `make clean-generated` separately removes ignored caches, artifacts,
 certificates, and synthetic credentials after an explicit typed confirmation.

@@ -7,6 +7,10 @@ Start-Transcript -Path (Join-Path $logDirectory 'winrm.log') -Append
 $networkProfile = $null
 $restorePublicProfile = $false
 try {
+    # This synthetic image account is also Vagrant's shutdown/boot communicator.
+    # Keep it usable when an image or VM is older than Windows' password age.
+    Set-LocalUser -Name 'vagrant' -PasswordNeverExpires $true
+
     $activeProfiles = @(
         Get-NetConnectionProfile |
             Where-Object { $_.IPv4Connectivity -ne 'Disconnected' }
