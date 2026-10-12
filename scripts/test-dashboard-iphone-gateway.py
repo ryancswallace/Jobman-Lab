@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import pwd
 import subprocess
+import ssl
+import time
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -197,6 +199,84 @@ class CertificateTests(unittest.TestCase):
         self.assertEqual(previous, next(self.directory.glob('*.before-*')).read_bytes())
         for p, data in originals.items():
             self.assertEqual(data, p.read_bytes())
+
+    def test_runtime_certificate_supports_strict_verification(self):
+        certs = self.directory / '.lab/certs'
+        certs.mkdir(parents=True)
+        for name in ('lab-ca.crt', 'lab-ca.key'):
+            (certs / name).write_bytes((self.directory / name).read_bytes())
+        runtime = self.directory / 'runtime'
+        runtime.mkdir()
+        script = (ROOT / 'scripts/init-dashboard-runtime.sh').read_text()
+        function = script[script.index('make_certificate() {'):script.index('make_certificate dashboard-server')]
+        subprocess.run(['bash', '-euc', 'runtime_root="$1"\n' + function +
+                        '\nmake_certificate dashboard-server dashboard.lab.test serverAuth DNS:dashboard.lab.test',
+                        'test', str(runtime)], cwd=self.directory, check=True, capture_output=True)
+        tls.run(['openssl', 'verify', '-x509_strict', '-purpose', 'sslserver',
+                 '-verify_hostname', 'dashboard.lab.test', '-CAfile', certs / 'lab-ca.crt',
+                 runtime / 'dashboard-server.crt'])
+
+    def handshake(self, context, hostname='oidc.lab.test'):
+        server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server.load_cert_chain(self.directory / 'control01.lab.test.crt',
+                               self.directory / 'control01.lab.test.key')
+        ci, co, si, so = [ssl.MemoryBIO() for _ in range(4)]
+        client = context.wrap_bio(ci, co, server_hostname=hostname)
+        peer = server.wrap_bio(si, so, server_side=True)
+        for _ in range(20):
+            done = 0
+            for endpoint in (client, peer):
+                try:
+                    endpoint.do_handshake()
+                    done += 1
+                except ssl.SSLWantReadError:
+                    pass
+            if done == 2:
+                return
+            si.write(co.read())
+            ci.write(so.read())
+        self.fail('TLS handshake did not complete')
+
+    def test_legacy_ca_compatibility_still_rejects_invalid_servers(self):
+        tls.ensure(self.directory)
+        ca = self.directory / 'lab-ca.crt'
+        modern = gateway.tls_context(ca)
+        self.assertEqual(modern.verify_flags, ssl.create_default_context().verify_flags)
+        self.handshake(modern)
+        # Match an older Lab root: same key/subject, CA:TRUE, no keyUsage.
+        tls.run(['openssl', 'req', '-x509', '-key', self.directory / 'lab-ca.key',
+                 '-days', '730', '-subj', '/CN=Synthetic Test CA',
+                 '-addext', 'basicConstraints=critical,CA:TRUE', '-out', ca])
+        strict = ssl.create_default_context(cafile=str(ca))
+        strict.verify_flags |= ssl.VERIFY_X509_STRICT
+        if ssl.OPENSSL_VERSION_INFO >= (3, 0):
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                self.handshake(strict)
+        compatible = gateway.tls_context(ca)
+        self.assertEqual(compatible.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(compatible.check_hostname)
+        self.assertFalse(compatible.verify_flags & ssl.VERIFY_X509_STRICT)
+        self.handshake(compatible)
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.handshake(compatible, 'wrong.lab.test')
+        other_ca = self.directory / 'other.crt'
+        tls.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '10',
+                 '-subj', '/CN=Unrelated CA', '-addext', 'basicConstraints=critical,CA:TRUE',
+                 '-keyout', self.directory / 'other.key', '-out', other_ca])
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.handshake(gateway.tls_context(other_ca))
+        # Reissue the same server identity with an expired validity period.
+        csr = self.directory / 'expired.csr'
+        tls.run(['openssl', 'req', '-new', '-key', self.directory / 'control01.lab.test.key',
+                 '-subj', '/CN=oidc.lab.test', '-out', csr])
+        ext = self.directory / 'expired.ext'
+        ext.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:oidc.lab.test\n')
+        tls.run(['openssl', 'x509', '-req', '-days', '0', '-in', csr, '-CA', ca,
+                 '-CAkey', self.directory / 'lab-ca.key', '-set_serial', '10',
+                 '-extfile', ext, '-out', self.directory / 'control01.lab.test.crt'])
+        time.sleep(1.1)  # Let the zero-day leaf pass its notAfter second.
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.handshake(compatible)
 
     def test_missing_key_does_not_replace_existing_identity(self):
         (self.directory / 'control01.lab.test.crt').write_text('existing')

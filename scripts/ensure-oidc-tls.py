@@ -44,7 +44,7 @@ def ensure(directory):
             os.chmod(staging / 'server.key', 0o600)
             (staging / 'server.key').replace(key)
         csr, new, ext = staging / 'server.csr', staging / 'server.crt', staging / 'extensions.cnf'
-        ext.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:control01.lab.test,DNS:oidc.lab.test,IP:10.77.0.21\n')
+        ext.write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:control01.lab.test,DNS:oidc.lab.test,IP:10.77.0.21\n')
         if cert.exists():
             run(['openssl', 'x509', '-x509toreq', '-in', cert, '-signkey', key, '-out', csr])
         else:
