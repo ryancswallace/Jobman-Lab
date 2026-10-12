@@ -162,14 +162,41 @@ def loaded(name):
     return run(['/bin/launchctl', 'print', 'system/' + LABEL + '.' + name]).returncode == 0
 
 
+def wait_for_exit(pids, timeout=15):
+    # bootout returns before processes finish handling SIGTERM. launchd applies
+    # ExitTimeOut (10 seconds) if necessary; observe only those recorded PIDs.
+    deadline = time.monotonic() + timeout
+    pending = set(pids)
+    while pending:
+        for pid in list(pending):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pending.remove(pid)
+            except PermissionError:
+                pass
+        if not pending:
+            return
+        require(time.monotonic() < deadline,
+                'Gateway shutdown timed out; processes still exiting: ' +
+                ', '.join(str(pid) for pid in sorted(pending)))
+        time.sleep(0.1)
+
+
 def stop():
-    failures = []
+    failures, pids = [], []
     for name in reversed(SERVICES):
-        if loaded(name):
-            r = run(['/bin/launchctl', 'bootout', 'system/' + LABEL + '.' + name])
+        target = 'system/' + LABEL + '.' + name
+        state = run(['/bin/launchctl', 'print', target])
+        if state.returncode == 0:
+            match = re.search(r'^\s*pid = ([1-9][0-9]*)\s*$', state.stdout, re.MULTILINE)
+            if match:
+                pids.append(int(match.group(1)))
+            r = run(['/bin/launchctl', 'bootout', target])
             if r.returncode:
                 failures.append(name)
     require(not failures, 'Could not stop gateway services: ' + ', '.join(failures))
+    wait_for_exit(pids)
 
 
 def tls_context(cafile):
@@ -205,6 +232,21 @@ def verify(c):
     print('Gateway DNS and verified HTTPS pass; phone-only DNS access enforced.')
 
 
+def check_port(address, port, kind):
+    with socket.socket(socket.AF_INET, kind) as listener:
+        # A closed TCP connection may remain in TIME_WAIT after its process
+        # exits. Match daemon restart semantics while still refusing listeners.
+        if kind == socket.SOCK_STREAM:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind((address, port))
+            if kind == socket.SOCK_STREAM:
+                listener.listen(1)
+        except OSError as e:
+            protocol = 'UDP' if kind == socket.SOCK_DGRAM else 'TCP'
+            raise RuntimeError(f'{protocol} port {address}:{port} is occupied; stop the previous gateway first') from e
+
+
 def manage_start(c, user):
     require(os.geteuid() == 0, 'Internal start requires sudo')
     preflight(c)
@@ -230,11 +272,7 @@ def manage_start(c, user):
                                 ('127.0.0.1', 1054, socket.SOCK_DGRAM),
                                 ('127.0.0.1', 1054, socket.SOCK_STREAM),
                                 ('127.0.0.1', 18443, socket.SOCK_STREAM)]:
-        with socket.socket(socket.AF_INET, kind) as listener:
-            try:
-                listener.bind((address, port))
-            except OSError as e:
-                raise RuntimeError(f'Port {address}:{port} is occupied; stop the previous gateway first') from e
+        check_port(address, port, kind)
     for name, text in configurations(c, RUNTIME, user).items():
         write(RUNTIME / name, text, 0o644)
     for args in ([paths['dnsmasq'], '--test', '--conf-file=' + str(RUNTIME / 'dnsmasq.conf')],
