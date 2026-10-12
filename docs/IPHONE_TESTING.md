@@ -135,3 +135,10 @@ backed up. A missing private key or expiring CA fails rather than replacing
 identity or trust. Ansible already restarts Keycloak when its certificate changes.
 New Dashboard runtime leaves also use 365 days. Existing valid leaves and CAs
 are not rotated by gateway startup.
+
+The host health check supports older Lab CAs that lack a key-usage extension.
+For these roots only, it disables Python 3.13's additional `VERIFY_X509_STRICT`
+checks; CA trust, signatures, hostname matching, and certificate expiry are still
+verified. This is limited to the host probe and does not change app TLS policy,
+server certificates, or the CA trusted by the phone. New Lab CAs include key
+usage and retain Python's default strict validation.

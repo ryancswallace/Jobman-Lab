@@ -18,9 +18,12 @@ make_certificate() {
       -addext "extendedKeyUsage=$purpose" \
       -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
       -addext "subjectAltName=$alternatives" -keyout "$key" -out "$runtime_root/$name.csr" 2>/dev/null
+    printf '%s\n' 'subjectKeyIdentifier=hash' 'authorityKeyIdentifier=keyid:always' \
+      > "$runtime_root/$name.ext"
     openssl x509 -req -sha256 -days 365 -in "$runtime_root/$name.csr" \
       -CA .lab/certs/lab-ca.crt -CAkey .lab/certs/lab-ca.key \
-      -CAserial "$runtime_root/ca.srl" -CAcreateserial -copy_extensions copyall -out "$cert" 2>/dev/null
+      -CAserial "$runtime_root/ca.srl" -CAcreateserial -copy_extensions copyall \
+      -extfile "$runtime_root/$name.ext" -out "$cert" 2>/dev/null
   fi
   [[ -s "$key" && -s "$cert" ]] || { printf 'Incomplete runtime certificate pair; inspect private material.\n' >&2; exit 1; }
   openssl verify -CAfile .lab/certs/lab-ca.crt "$cert" >/dev/null

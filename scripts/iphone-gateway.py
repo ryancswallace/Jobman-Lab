@@ -172,13 +172,26 @@ def stop():
     require(not failures, 'Could not stop gateway services: ' + ', '.join(failures))
 
 
+def tls_context(cafile):
+    context = ssl.create_default_context(cafile=str(cafile))
+    # -text also works with macOS LibreSSL if sudo selects the system PATH.
+    usage = run(['openssl', 'x509', '-in', cafile, '-noout', '-text'])
+    require(usage.returncode == 0, 'Could not inspect Lab CA key usage')
+    if 'X509v3 Key Usage:' not in usage.stdout:
+        # Pre-existing Lab roots lack keyUsage. Python 3.13 enabled extra RFC
+        # strictness by default; preserve compatibility only for those roots.
+        # CERT_REQUIRED, hostname, validity, and signature checks remain on.
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
+
+
 def verify(c):
     for name in ('dashboard.lab.test', 'oidc.lab.test'):
         for transport in ([], ['+tcp']):
             r = run(['/usr/bin/dig', '@127.0.0.1', '-p', '1053', name, 'A', '+short',
                      '+time=2', '+tries=1', *transport])
             require(r.returncode == 0 and r.stdout.strip() == c['mac_address'], 'Gateway DNS failed: ' + name)
-    ctx = ssl.create_default_context(cafile=str(ROOT / '.lab/certs/lab-ca.crt'))
+    ctx = tls_context(ROOT / '.lab/certs/lab-ca.crt')
     for name, path in [('dashboard.lab.test', '/auth/native/config'),
                        ('oidc.lab.test', '/realms/jobman-lab/.well-known/openid-configuration')]:
         with socket.create_connection(('127.0.0.1', 18443), timeout=5) as raw:
