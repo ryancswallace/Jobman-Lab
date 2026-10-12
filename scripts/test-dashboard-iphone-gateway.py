@@ -119,12 +119,25 @@ class GatewayTests(unittest.TestCase):
                      patch.object(gateway, 'preflight'), patch.object(gateway, 'tools', return_value=paths), \
                      patch.object(gateway, 'loaded', return_value=False), patch.object(gateway, 'stop') as stop, \
                      patch.object(gateway.socket, 'socket'), patch.object(gateway, 'run', side_effect=command), \
-                     patch.object(Path, 'stat', stat):
+                     patch.object(Path, 'stat', stat), patch.object(gateway.os, 'chown', wraps=os.chown) as chown:
                     with self.assertRaisesRegex(RuntimeError, 'launchd startup failed'):
                         gateway.manage_start(CONFIG, account)
                     self.assertEqual(stop.call_count, 2)
+                    account_info = pwd.getpwnam(account)
+                    self.assertEqual(chown.call_count, 2)
+                    for name in ('dnsmasq', 'dnsdist'):
+                        chown.assert_any_call(runtime / (name + '.log'), account_info.pw_uid, account_info.pw_gid)
                 self.assertEqual(runtime.stat().st_mode & 0o777, 0o755)
                 self.assertFalse((runtime / 'configuration.json').exists())
+                # Actual filesystem ownership/mode, not a mocked chown: the
+                # service account must be able to open launchd redirections.
+                for name in ('dnsmasq', 'dnsdist'):
+                    log = runtime / (name + '.log')
+                    self.assertEqual(log.stat().st_uid, pwd.getpwnam(account).pw_uid)
+                    self.assertEqual(log.stat().st_gid, pwd.getpwnam(account).pw_gid)
+                    self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+                    with log.open('a') as stream:
+                        stream.write('service diagnostic\n')
             finally:
                 os.umask(previous)
 
