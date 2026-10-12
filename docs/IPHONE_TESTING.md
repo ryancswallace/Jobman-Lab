@@ -123,7 +123,9 @@ check the **full-trust switch** before changing certificates or network settings
 Gateway logs contain service operational messages, not DNS query logging or
 HTTP contents. TLS passes unchanged through HAProxy. There is no general TCP
 proxy, management console listener, or access to the remaining Lab services.
-Root-owned runtime files are regenerated from validated configuration at start.
+Root-owned runtime configuration files are regenerated from validated configuration
+at start. Private operational logs belong to the service account so launchd can
+open them after applying its user identity.
 The launcher cleans up jobs on startup failure and serializes management actions;
 launchd restarts a gateway process if it exits unexpectedly.
 

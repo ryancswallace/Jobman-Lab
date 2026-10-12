@@ -234,7 +234,12 @@ def manage_start(c, user):
             path = RUNTIME / (name + '.plist')
             write(path, plistlib.dumps(value), 0o644)
             # A fresh start bounds retained operational logs; queries are never logged.
-            write(RUNTIME / (name + '.log'), b'')
+            log = RUNTIME / (name + '.log')
+            write(log, b'')
+            # launchd opens redirected output after applying UserName. Keep
+            # logs private, but writable by the account running the service.
+            account = pwd.getpwnam(user)
+            os.chown(log, account.pw_uid, account.pw_gid)
             r = run(['/bin/launchctl', 'bootstrap', 'system', path])
             require(r.returncode == 0, 'launchd startup failed: ' + name + ': ' + r.stderr[:300])
         for attempt in range(20):
