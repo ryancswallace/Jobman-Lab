@@ -174,7 +174,8 @@ def stop():
 
 def tls_context(cafile):
     context = ssl.create_default_context(cafile=str(cafile))
-    usage = run(['openssl', 'x509', '-in', cafile, '-noout', '-ext', 'keyUsage'])
+    # -text also works with macOS LibreSSL if sudo selects the system PATH.
+    usage = run(['openssl', 'x509', '-in', cafile, '-noout', '-text'])
     require(usage.returncode == 0, 'Could not inspect Lab CA key usage')
     if 'X509v3 Key Usage:' not in usage.stdout:
         # Pre-existing Lab roots lack keyUsage. Python 3.13 enabled extra RFC
