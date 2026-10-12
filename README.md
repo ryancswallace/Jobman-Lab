@@ -6,7 +6,8 @@ defined by Vagrant, Packer, Ansible, checked-in topology data, and bounded
 lifecycle scripts. Generated images, credentials, keys, caches, and VM state
 live beneath `.lab/` or `.vagrant/` and are intentionally ignored.
 
-The lab never bridges to the Mac's LAN. Every VM has one Parallels shared-NAT
+The lab never bridges to the Mac's LAN. An optional [personal iPhone gateway](docs/IPHONE_TESTING.md)
+proxies only Dashboard and test sign-in HTTPS for one explicitly allowed phone. Every VM has one Parallels shared-NAT
 adapter for outbound package and image downloads and one host-only adapter on
 `10.77.0.0/24` for lab traffic. All names, identities, credentials, namespaces,
 certificates, and workload data are synthetic.
@@ -118,6 +119,10 @@ For faster Linux-only work, use `make up-core`. It omits `linuxws01` and
 `winws01` but retains storage, Control, PostgreSQL, Slurm, submit, and compute
 coverage. Later, `make up-full` adds the workstation pair without rebuilding
 the existing core.
+
+For native iPhone testing, configure the optional [phone-only Wi-Fi gateway](docs/IPHONE_TESTING.md)
+once. Supported Make startup commands then start it in the background; shutdown
+commands stop it. macOS may prompt for administrator authorization for DNS.
 
 Common operations are:
 
@@ -404,8 +409,8 @@ Original Control8080 and Keycloak8443 on control01 are preserved. Only the
 Dashboard guest receives the scoped `/etc/hosts` entry for its own hostname;
 the Mac's DNS and trust stores are unchanged. Host checks should use an explicit
 CA and a hostname-preserving `--resolve dashboard.lab.test:8443:10.77.0.10`.
-Existing Lab guest trust already covers the Lab CA. Generated application and
-broker leaf certificates last seven days and are not silently renewed; inspect
+Existing Lab guest trust already covers the Lab CA. New application and
+broker leaf certificates last 365 days and are not silently renewed; inspect
 and replace the explicit synthetic credentials before expiry.
 
 The private Control fixture root is `/etc/jobman-dashboard-lab/control-fixture`,

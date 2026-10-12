@@ -18,7 +18,7 @@ make_certificate() {
       -addext "extendedKeyUsage=$purpose" \
       -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
       -addext "subjectAltName=$alternatives" -keyout "$key" -out "$runtime_root/$name.csr" 2>/dev/null
-    openssl x509 -req -sha256 -days 7 -in "$runtime_root/$name.csr" \
+    openssl x509 -req -sha256 -days 365 -in "$runtime_root/$name.csr" \
       -CA .lab/certs/lab-ca.crt -CAkey .lab/certs/lab-ca.key \
       -CAserial "$runtime_root/ca.srl" -CAcreateserial -copy_extensions copyall -out "$cert" 2>/dev/null
   fi

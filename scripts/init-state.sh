@@ -30,6 +30,8 @@ ca_cert="$state_root/certs/lab-ca.crt"
 if [[ ! -f "$ca_key" || ! -f "$ca_cert" ]]; then
   openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
     -subj '/CN=Jobman Lab Development CA' \
+    -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' \
     -keyout "$ca_key" -out "$ca_cert" 2>/dev/null
 fi
 
@@ -49,18 +51,7 @@ if [[ "$agent_ca_valid" != true ]]; then
     -keyout "$agent_ca_key" -out "$agent_ca_cert" 2>/dev/null
 fi
 
-tls_key="$state_root/certs/control01.lab.test.key"
-tls_cert="$state_root/certs/control01.lab.test.crt"
-if [[ ! -f "$tls_key" || ! -f "$tls_cert" ]]; then
-  openssl req -new -newkey rsa:3072 -nodes \
-    -subj '/CN=control01.lab.test' \
-    -addext 'subjectAltName=DNS:control01.lab.test,DNS:oidc.lab.test,IP:10.77.0.21' \
-    -keyout "$tls_key" -out "$state_root/certs/control01.lab.test.csr" 2>/dev/null
-  openssl x509 -req -sha256 -days 825 \
-    -in "$state_root/certs/control01.lab.test.csr" \
-    -CA "$ca_cert" -CAkey "$ca_key" -CAcreateserial \
-    -copy_extensions copyall -out "$tls_cert" 2>/dev/null
-fi
+python3 "$lab_root/scripts/ensure-oidc-tls.py"
 
 if [[ ! -f "$state_root/credentials/lab.env" ]]; then
   pg_password="$(openssl rand -hex 24)"
