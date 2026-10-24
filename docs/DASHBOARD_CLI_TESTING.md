@@ -94,7 +94,7 @@ jobman_lab run --name demo-failure \
   -- /bin/sh -c 'printf "Demonstration failure\n" >&2; exit 7'
 ```
 
-The second job intentionally fails. Check its exit code and stderr in the job
+The second job intentionally fails. Check its final Failure result and stderr in the job
 details. `jobman_lab wait JOB_ID` returns a nonzero exit status for this job;
 that is the expected result. You can also request a diagnosis from the
 Dashboard job page.
@@ -109,7 +109,7 @@ jobman_lab run --name demo-slurm \
   -- /bin/sh -c 'hostname; printf "Running on Slurm\n"; sleep 3'
 ```
 
-Inspect the scheduler job ID, partition, state, execution host, and logs in the
+Inspect the scheduler job ID, partition, state, and logs in the
 Dashboard. Use the bounded resource settings above for this small Lab.
 Native arrays use `jobman_lab collection submit FILE`; multiple independent
 `run` calls create separate jobs, not an array. Dependency graphs use
