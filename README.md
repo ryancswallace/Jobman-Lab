@@ -171,6 +171,11 @@ state is corrupt or unreadable.
 
 ## What validation covers
 
+To submit your own bounded CLI jobs and watch them in the web or iPhone app,
+follow [Dashboard CLI testing](docs/DASHBOARD_CLI_TESTING.md). It uses the
+monitored `dashboard-operations` namespace, a private synthetic-Alice sign-in
+helper, and the real host/Slurm execution targets.
+
 `make test` refreshes short-lived OIDC tokens, idempotently configures the
 namespace and targets, enrolls missing Alice/Bob agents, then verifies:
 
