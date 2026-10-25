@@ -134,7 +134,7 @@ class CLITests(unittest.TestCase):
         path.chmod(0o600)
         link = self.root / 'linked-token'
         link.symlink_to(path)
-        with self.assertRaises(OSError):
+        with self.assertRaises(RuntimeError):
             cli.write_private(link, b'changed')
         self.assertIn('p' * 64, path.read_text())
         directory = self.root / '.lab/dashboard/cli'
@@ -142,6 +142,61 @@ class CLITests(unittest.TestCase):
         with patch.object(cli, 'login') as login, self.assertRaises(RuntimeError):
             cli.execute(self.root, ['list'])
         login.assert_not_called()
+
+    def test_atomic_token_refresh_does_not_read_a_superseded_inode(self):
+        path = self.root / 'access-token'
+        replacement = self.root / 'replacement'
+        for file in (path, replacement):
+            file.write_bytes(b'old-token\n')
+            file.chmod(0o600)
+        original_open = os.open
+
+        def replace_after_open(file, *args, **kwargs):
+            fd = original_open(file, *args, **kwargs)
+            if Path(file) == path:
+                # Reproduce the zero-link inode window from atomic renewal.
+                replacement.replace(path)
+                self.assertEqual(os.fstat(fd).st_nlink, 0)
+            return fd
+
+        with patch.object(cli.os, 'open', side_effect=replace_after_open):
+            cli.write_private(path, b'new-token\n')
+        self.assertEqual(cli.read_file(path, private=True), b'new-token\n')
+
+    def test_replacement_preserves_file_security_boundaries(self):
+        path = self.root / 'access-token'
+        for case in ('hardlink', 'public', 'oversized', 'directory'):
+            with self.subTest(case=case):
+                if case == 'directory':
+                    path.mkdir()
+                else:
+                    path.write_bytes(b'x' * (65537 if case == 'oversized' else 8))
+                    path.chmod(0o644 if case == 'public' else 0o600)
+                alias = self.root / 'alias'
+                if case == 'hardlink':
+                    os.link(path, alias)
+                try:
+                    with self.assertRaises(RuntimeError):
+                        cli.write_private(path, b'new-token\n')
+                    if case != 'directory':
+                        self.assertEqual(path.read_bytes(), b'x' * (65537 if case == 'oversized' else 8))
+                finally:
+                    alias.unlink(missing_ok=True)
+                    if case == 'directory':
+                        path.rmdir()
+                    else:
+                        path.unlink()
+
+    def test_repeated_invocations_refresh_existing_token_and_config(self):
+        with patch.object(cli.shutil, 'which', return_value='/synthetic/jobman'), \
+             patch.object(cli, 'login', side_effect=['first-token', 'second-token']), \
+             patch.object(cli.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(cli.execute(self.root, ['status', 'synthetic-job']), 0)
+            self.assertEqual(cli.execute(self.root, ['status', 'synthetic-job']), 0)
+        directory = self.root / '.lab/dashboard/cli'
+        self.assertEqual(cli.read_file(directory / 'access-token', private=True), b'second-token\n')
+        self.assertEqual(json.loads(cli.read_file(directory / 'config.yaml', private=True))['shared']['current_profile'],
+                         cli.PROFILE)
 
     def test_wrapper_preserves_arguments_private_files_and_exit_code(self):
         arguments = ['run', '--target', 'dashboard-execution-host', '--', '/bin/sh', '-c', 'echo "two words"; exit 7']

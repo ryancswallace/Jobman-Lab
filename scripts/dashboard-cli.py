@@ -57,23 +57,33 @@ def private_directory(path):
             stat.S_IMODE(info.st_mode) == 0o700, 'Expected an owner-private CLI directory')
 
 
+def validate_file(info, path, private=False, maximum=65536):
+    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= maximum,
+            'Expected a bounded regular Lab file: ' + path.name)
+    if private:
+        require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0,
+                'Lab credentials must be an owner-private regular file')
+
+
 def read_file(path, private=False, maximum=65536):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, 'rb') as stream:
-        info = os.fstat(stream.fileno())
-        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= maximum,
-                'Expected a bounded regular Lab file: ' + path.name)
-        if private:
-            require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0,
-                    'Lab credentials must be an owner-private regular file')
+        validate_file(os.fstat(stream.fileno()), path, private, maximum)
         data = stream.read(maximum + 1)
         require(len(data) <= maximum, 'Lab file exceeds the size limit')
         return data
 
 
 def write_private(path, data):
-    if path.exists() or path.is_symlink():
-        read_file(path, private=True)
+    # Inspect the directory entry without opening the old token. An open inode
+    # can have zero links after atomic replacement, even when the new entry is
+    # valid. We only replace this entry; we never read or modify its old inode.
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        validate_file(info, path, private=True)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
