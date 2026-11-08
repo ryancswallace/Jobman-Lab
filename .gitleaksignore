@@ -1,0 +1,5 @@
+# Reviewed historical false positives only; no path-wide or test-wide exclusions.
+# Hashes, fixed filenames/identifiers and prose are not reusable credentials.
+# New fingerprints require review; run Gitleaks with --redact=100.
+33f6bc1615e2c215aba06df9aa05c07ffe084a1b:scripts/test-dashboard-nfs-stall.py:generic-api-key:35
+63be2b757f4e52aac0bc2e0ef3a1aa4f88bfb286:scripts/dashboard-multisource-plan.py:generic-api-key:45

@@ -1,0 +1,28 @@
+# Reviewed repository settings; synchronize hosted controls deliberately.
+repository:
+  description: Synthetic Jobman integration lab and reproducible release evaluation.
+  has_issues: true
+  has_wiki: false
+  default_branch: main
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  delete_branch_on_merge: true
+branches:
+  - name: main
+    protection:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: false
+        require_last_push_approval: true
+      required_status_checks:
+        strict: true
+        contexts:
+          - Validate automation
+      enforce_admins: false
+      required_linear_history: true
+      allow_force_pushes: false
+      allow_deletions: false
+      required_conversation_resolution: true
+      restrictions: null

@@ -1,5 +1,9 @@
 # Jobman local lab
 
+The source and reusable evaluation tooling use the [MIT License](LICENSE).
+Start with [release evaluation](docs/RELEASE_EVALUATION.md) to verify and exercise
+an immutable product selection without existing Lab guests or Parallels.
+
 Reusable offline deployment composition is described in
 [External deployment configuration](docs/DEPLOYMENT_CONFIGURATION.md). Install
 the pinned `config/requirements.txt` dependencies before using its configuration

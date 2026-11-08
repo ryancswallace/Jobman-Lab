@@ -20,6 +20,16 @@ config-test: ## Test offline deployment composition without accessing Lab state.
 config-schema: ## Print the versioned generic deployment schema.
 	$(CONFIG_PYTHON) scripts/jobman-config.py schema
 
+.PHONY: evaluation-test evaluation-fetch evaluation-smoke
+evaluation-test: ## Validate release evaluation integrity and source-selection boundaries offline.
+	PYTHONDONTWRITEBYTECODE=1 $(CONFIG_PYTHON) scripts/test-evaluation.py
+
+evaluation-fetch: ## Download and attest the explicit MANIFEST into a new OUTPUT directory.
+	$(CONFIG_PYTHON) scripts/evaluation.py fetch --manifest "$(MANIFEST)" --output "$(OUTPUT)"
+
+evaluation-smoke: ## Exercise verified INPUTS in disposable isolated Docker resources; write new RESULT.
+	$(CONFIG_PYTHON) scripts/evaluate-smoke.py --manifest "$(MANIFEST)" --inputs "$(INPUTS)" --output "$(RESULT)"
+
 bootstrap: check-host verify-sources ## Prepare host tools and ignored lab state.
 	./scripts/init-state.sh
 	$(MAKE) tools collections packer-init fetch-artifacts
