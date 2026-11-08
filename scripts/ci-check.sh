@@ -23,6 +23,7 @@ python3 -c "import ast, pathlib; [ast.parse(p.read_text()) for root in ['scripts
 # These offline suites must not load Lab credentials or contact guests.
 PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-jobman-config.py
 PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-lab-config.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-evaluation.py
 for test_script in scripts/test-dashboard-*.py; do
   PYTHONDONTWRITEBYTECODE=1 python3 "$test_script"
 done

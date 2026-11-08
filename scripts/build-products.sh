@@ -9,6 +9,18 @@ jobman_repo="$(lab_config_value versions.products.jobman_repo --absolute)"
 control_repo="$(lab_config_value versions.products.jobman_control_repo --absolute)"
 toolchain="go$(lab_config_value versions.guest_software.go)"
 
+if [[ "${JOBMAN_LAB_BUILD_MODE:-development}" == evaluation ]]; then
+  : "${JOBMAN_LAB_EVALUATION_MANIFEST:?select a reviewed immutable evaluation manifest}"
+  : "${JOBMAN_LAB_EVALUATION_OUTPUT:?select a new absolute evaluation output directory}"
+  exec "${JOBMAN_CONFIG_PYTHON:-python3}" "$lab_root/scripts/evaluation.py" build \
+    --manifest "$JOBMAN_LAB_EVALUATION_MANIFEST" --core "$jobman_repo" \
+    --control "$control_repo" --output "$JOBMAN_LAB_EVALUATION_OUTPUT"
+fi
+[[ "${JOBMAN_LAB_BUILD_MODE:-development}" == development ]] || {
+  printf '%s\n' 'JOBMAN_LAB_BUILD_MODE must be development or evaluation' >&2
+  exit 2
+}
+
 mkdir -p "$artifact_root/bin/linux-arm64" "$artifact_root/bin/windows-arm64"
 
 build_one() {
