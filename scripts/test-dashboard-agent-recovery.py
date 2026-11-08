@@ -150,6 +150,7 @@ class RecoveryTests(unittest.TestCase):
         path = self.root / 'agent.db'
         database = sqlite3.connect(path)
         self.addCleanup(database.close)
+        database.execute('PRAGMA journal_mode=WAL')
         database.execute('CREATE TABLE executions (execution_id TEXT, delivery_id TEXT, assignment_digest TEXT, state TEXT)')
         database.execute("INSERT INTO executions VALUES ('execution','delivery','digest','running')")
         database.commit()
@@ -161,6 +162,18 @@ class RecoveryTests(unittest.TestCase):
         database.execute("UPDATE executions SET delivery_id='different'")
         database.commit()
         self.assertNotEqual(guest.journal_identity(self.root, os.getuid()), original)
+
+    def test_closed_wal_journal_sidecars_belong_to_execution_user(self):
+        path = self.root / 'agent.db'
+        with sqlite3.connect(path) as database:
+            database.execute('PRAGMA journal_mode=WAL')
+            database.execute('CREATE TABLE executions (execution_id TEXT, delivery_id TEXT, assignment_digest TEXT)')
+            database.execute("INSERT INTO executions VALUES ('execution','delivery','digest')")
+        database.close()
+        path.chmod(0o600)
+        guest.journal_identity(self.root, os.getuid())
+        for file in self.root.glob('agent.db*'):
+            self.assertEqual(file.stat().st_uid, os.getuid())
 
 
 if __name__ == '__main__':

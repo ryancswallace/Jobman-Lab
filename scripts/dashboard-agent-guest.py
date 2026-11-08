@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -17,6 +16,20 @@ import uuid
 HOSTS = {'host': 'control01.lab.test', 'slurm': 'submit01.lab.test'}
 SERVER = 'https://10.77.0.21:18443'
 BASE = Path('/var/lib/jobman-dashboard-execution')
+JOURNAL_READER = r'''
+import hashlib,json,sqlite3,sys
+database=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True,timeout=5)
+digest=hashlib.sha256()
+try:
+    cursor=database.execute('SELECT execution_id,delivery_id,assignment_digest FROM executions ORDER BY execution_id LIMIT 100001')
+    for count,row in enumerate(cursor,1):
+        if count>100000 or not all(isinstance(v,str) and len(v)<=256 for v in row):
+            raise RuntimeError('Journal exceeds bounded inspection')
+        digest.update((json.dumps(row)+'\n').encode())
+finally:
+    database.close()
+print(digest.hexdigest())
+'''
 
 
 def require(value, message):
@@ -93,14 +106,16 @@ def journal_identity(state, owner=21001):
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == owner and
             info.st_mode & 0o077 == 0, 'Invalid agent journal')
-    database = sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True, timeout=5)
-    try:
-        rows = database.execute('SELECT execution_id, delivery_id, assignment_digest FROM executions '
-                                'ORDER BY execution_id LIMIT 100001').fetchall()
-        require(len(rows) <= 100000, 'Agent journal exceeds bounded recovery inspection')
-    finally:
-        database.close()
-    return (info.st_dev, info.st_ino, hashlib.sha256(json.dumps(rows).encode()).hexdigest())
+    command = [sys.executable, '-c', JOURNAL_READER, str(path)]
+    if os.geteuid() != owner:
+        require(os.geteuid() == 0 and owner == 21001, 'Unexpected journal owner')
+        # Read-only SQLite may create WAL/SHM sidecars. They must belong to the
+        # execution user, never root, including when the last service closed DB.
+        command = ['runuser', '-u', 'alice', '--', *command]
+    result = run(command, timeout=15)
+    require(result.returncode == 0 and re.fullmatch(rb'[a-f0-9]{64}\n', result.stdout),
+            'Could not inspect execution journal as its owner')
+    return (info.st_dev, info.st_ino, result.stdout.decode().strip())
 
 
 def recover(kind, request):
