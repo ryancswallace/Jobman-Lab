@@ -2,6 +2,7 @@
 """Offline integrity, traversal and reproducible-source evaluation boundaries."""
 import copy
 import io
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -11,6 +12,10 @@ import unittest
 from unittest.mock import patch
 
 import evaluation
+
+spec = importlib.util.spec_from_file_location('smoke', Path(__file__).with_name('evaluate-smoke.py'))
+smoke = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(smoke)
 
 
 def manifest():
@@ -25,6 +30,21 @@ def manifest():
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_cleanup_uses_operation_labels_and_immutable_ids(self):
+        with patch.object(smoke, 'capture', side_effect=[b'a' * 64, b'b' * 64, b'', b'']) as command:
+            smoke.cleanup('c' * 32)
+        calls = [item.args[0] for item in command.call_args_list]
+        self.assertIn('label=' + smoke.LABEL + '=' + 'c' * 32, calls[0])
+        self.assertIn('label=' + smoke.LABEL + '=' + 'c' * 32, calls[1])
+        self.assertEqual(calls[2], ['docker', 'rm', '-f', 'a' * 64])
+        self.assertEqual(calls[3], ['docker', 'network', 'rm', 'b' * 64])
+
+    def test_failed_or_unexpected_ownership_inventory_never_deletes_names(self):
+        for response in (b'--all', b'not-an-owned-identity', b'a' * 64 + b' ' + b'b' * 64 + b' ' + b'c' * 64):
+            with patch.object(smoke, 'capture', side_effect=[response, b'']) as command, self.assertRaises(ValueError):
+                smoke.cleanup('c' * 32)
+            self.assertEqual(command.call_count, 2)
+
     def test_manifest_requires_pins_and_rejects_ambient_or_duplicate_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'selection.json'
