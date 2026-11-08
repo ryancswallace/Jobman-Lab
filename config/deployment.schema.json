@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:jobman:configuration:deployment:v1alpha1",
+  "title": "Jobman deployment configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind"],
+  "properties": {
+    "apiVersion": {"const": "jobman.config/v1alpha1"},
+    "kind": {"enum": ["Deployment", "Preset"]},
+    "metadata": {
+      "type": "object", "additionalProperties": false,
+      "required": ["organization", "environment", "deployment"],
+      "properties": {
+        "organization": {"$ref": "#/$defs/name"},
+        "environment": {"enum": ["lab", "dev", "test", "stage", "prod"]},
+        "deployment": {"$ref": "#/$defs/name"}
+      }
+    },
+    "bindings": {"type": "object", "maxProperties": 256,
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "description": "Explicit entry-document values reused through exact {$binding: name} objects; never secret values."},
+    "imports": {"type": "array", "maxItems": 16, "items": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/digest"}}
+    }},
+    "components": {"type": "object", "maxProperties": 128,
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {"type": "object", "additionalProperties": false,
+        "required": ["kind", "config"], "properties": {
+          "kind": {"enum": ["jobman", "jobman-agent", "jobman-control", "jobman-diagnose", "dashboard-api", "dashboard-worker", "dashboard-broker", "dashboard-operator", "control-resources", "control-directory", "control-delegation"]},
+          "config": {"type": "object"}
+        }
+      }
+    },
+    "files": {"type": "array", "maxItems": 256, "items": {
+      "type": "object", "additionalProperties": false, "required": ["source", "destination", "sha256", "visibility"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "destination": {"type": "string", "pattern": "^(assets|docs|notices|integrations)/[a-zA-Z0-9._/-]+$"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "visibility": {"enum": ["private", "public"]}
+      }
+    }},
+    "versions": {"type": "object", "maxProperties": 128, "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["version", "sha256"],
+        "properties": {"version": {"type": "string", "minLength": 1, "maxLength": 128}, "sha256": {"$ref": "#/$defs/digest"}}
+      }
+    }
+  },
+  "allOf": [{"if": {"properties": {"kind": {"const": "Deployment"}}},
+    "then": {"required": ["metadata", "components", "versions"]},
+    "else": {"not": {"required": ["metadata"]}}
+  }],
+  "$defs": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

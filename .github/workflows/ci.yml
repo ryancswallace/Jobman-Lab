@@ -30,7 +30,7 @@ jobs:
 
       - name: Install Ansible and ShellCheck
         run: |
-          python -m pip install --disable-pip-version-check --no-input ansible==14.3.1
+          python -m pip install --disable-pip-version-check --no-input ansible==14.3.1 -r config/requirements.txt
           sudo apt-get update
           sudo apt-get install --yes shellcheck acl
 

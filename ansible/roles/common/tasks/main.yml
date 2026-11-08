@@ -1,4 +1,11 @@
 ---
+- name: Refuse production identities in the synthetic Lab adapter
+  ansible.builtin.assert:
+    that:
+      - lab_synthetic | default(false) | bool
+      - lab_domain is match('.*\\.test$')
+    fail_msg: This adapter is restricted to explicitly synthetic Lab profiles.
+
 - name: Install common operating-system packages
   ansible.builtin.dnf:
     name:
@@ -27,7 +34,7 @@
     mode: "0644"
     content: |
       {% if inventory_hostname == 'storage01' %}
-      pool 2.almalinux.pool.ntp.org iburst
+      pool {{ lab_upstream_ntp }} iburst
       allow {{ lab_network_cidr }}
       {% else %}
       server {{ lab_nodes.storage01.address }} iburst prefer minpoll 0 maxpoll 4
@@ -50,6 +57,14 @@
     - chronyd
     - firewalld
     - sshd
+
+- name: Manage the synthetic host notice including explicit clearing
+  ansible.builtin.copy:
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ lab_motd }}"
 
 - name: Trust all traffic from the isolated host-only lab network
   ansible.posix.firewalld:

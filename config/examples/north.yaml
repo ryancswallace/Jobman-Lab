@@ -1,0 +1,19 @@
+apiVersion: jobman.config/v1alpha1
+kind: Deployment
+metadata:
+  organization: north
+  environment: test
+  deployment: north-test
+components:
+  client:
+    kind: jobman
+    config:
+      schema_version: 1
+      presentation:
+        organization: North Example Organization
+        display_name: North Jobman
+        motd: Synthetic example environment.
+versions:
+  jobman:
+    version: replace-with-the-tested-release
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"

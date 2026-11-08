@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-windows_iso="/Users/rcw/Downloads/Win11_25H2_English_Arm64_v2.iso"
-windows_sha="638aa2c88e94385b00f4f178d071e3df0b7d9e335577a83bd533b7f2eb65adf0"
+lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lab-config.sh
+source "$lab_root/scripts/lab-config.sh"
+windows_iso="$(lab_config_value versions.images.windows_iso --absolute)"
+windows_sha="$(lab_config_value versions.images.windows_iso_sha256)"
 
 [[ -f "$windows_iso" ]] || { printf 'missing Windows ISO: %s\n' "$windows_iso" >&2; exit 1; }
 printf '%s  %s\n' "$windows_sha" "$windows_iso" | shasum -a 256 --check
 
-for repo in \
-  /Users/rcw/home/code/jobman \
-  /Users/rcw/home/code/jobman-control \
-  /Users/rcw/home/code/jobman-diagnose
+for product in jobman jobman_control jobman_diagnose jobman_dashboard
 do
-  [[ -d "$repo/.git" ]] || { printf 'missing product repository: %s\n' "$repo" >&2; exit 1; }
+  repo="$(lab_config_value "versions.products.${product}_repo" --absolute)"
+  [[ -e "$repo/.git" ]] || { printf 'missing product repository: %s\n' "$repo" >&2; exit 1; }
   printf '%-48s %s\n' "$repo" "$(git -C "$repo" rev-parse HEAD)"
 done

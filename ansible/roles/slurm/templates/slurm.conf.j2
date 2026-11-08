@@ -1,5 +1,5 @@
-ClusterName=jobman-lab
-SlurmctldHost=slurmctl01(10.77.0.30)
+ClusterName={{ lab_name }}
+SlurmctldHost={{ lab_role_hosts.slurm_controller }}({{ lab_nodes[lab_role_hosts.slurm_controller].address }})
 SlurmUser=slurm
 SlurmctldPort=6817
 SlurmdPort=6818
@@ -22,9 +22,11 @@ SelectTypeParameters=CR_Core_Memory
 JobAcctGatherType=jobacct_gather/linux
 JobAcctGatherFrequency=30
 AccountingStorageType=accounting_storage/slurmdbd
-AccountingStorageHost=slurmctl01
+AccountingStorageHost={{ lab_role_hosts.slurm_controller }}
 AccountingStoragePort=6819
 SlurmctldLogFile=/var/log/slurm/slurmctld.log
 SlurmdLogFile=/var/log/slurm/slurmd.log
-NodeName=compute[01-02] CPUs=2 Boards=1 SocketsPerBoard=1 CoresPerSocket=2 ThreadsPerCore=1 RealMemory=1800 State=UNKNOWN
-PartitionName=cpu Nodes=compute[01-02] Default=YES MaxTime=INFINITE State=UP
+{% for name, node in lab_nodes.items() if node.role == 'compute' %}
+NodeName={{ name }} CPUs={{ node.cpus }} Boards=1 SocketsPerBoard=1 CoresPerSocket={{ node.cpus }} ThreadsPerCore=1 RealMemory={{ node.memory_mb - 248 }} State=UNKNOWN
+{% endfor %}
+PartitionName={{ lab_slurm_partition }} Nodes={{ groups['compute'] | join(',') }} Default=YES MaxTime={{ lab_slurm_max_time }} State=UP

@@ -21,6 +21,8 @@ ruby -c scripts/generate-inventory.rb >/dev/null
 ruby -c scripts/dashboard-inventory.rb >/dev/null
 python3 -c "import ast, pathlib; [ast.parse(p.read_text()) for root in ['scripts', 'ansible/roles'] for p in pathlib.Path(root).rglob('*.py')]"
 # These offline suites must not load Lab credentials or contact guests.
+PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-jobman-config.py
+PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-lab-config.py
 for test_script in scripts/test-dashboard-*.py; do
   PYTHONDONTWRITEBYTECODE=1 python3 "$test_script"
 done

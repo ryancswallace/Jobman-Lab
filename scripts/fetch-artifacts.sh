@@ -3,14 +3,16 @@ set -euo pipefail
 
 lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cache="$lab_root/.lab/cache"
-archive="$cache/slurm-25.05.8.tar.bz2"
-url='https://download.schedmd.com/slurm/slurm-25.05.8.tar.bz2'
-sha='21ddc614396e7e0b1ba792841f182b4c5b24949b116cb509a3a650fc6fcc22b6'
+# shellcheck source=scripts/lab-config.sh
+source "$lab_root/scripts/lab-config.sh"
+archive="$cache/slurm-$(lab_config_value versions.guest_software.slurm).tar.bz2"
+url="$(lab_config_value versions.guest_software.slurm_url)"
+sha="$(lab_config_value versions.guest_software.slurm_sha256)"
 
 mkdir -p "$cache"
 if [[ ! -f "$archive" ]] || ! printf '%s  %s\n' "$sha" "$archive" | shasum -a 256 --check --status; then
   temporary="$archive.partial"
-  curl --fail --location --show-error --output "$temporary" "$url"
+  curl --fail --location --show-error --proto '=https' --proto-redir '=https' --output "$temporary" --url "$url"
   printf '%s  %s\n' "$sha" "$temporary" | shasum -a 256 --check
   mv "$temporary" "$archive"
 fi

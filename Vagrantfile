@@ -1,13 +1,18 @@
 # frozen_string_literal: true
 
-require "yaml"
+require "json"
+require "open3"
 
 root = File.expand_path(__dir__)
-topology = YAML.safe_load(File.read(File.join(root, "config", "topology.yml")), aliases: false)
-versions = YAML.safe_load(File.read(File.join(root, "config", "versions.yml")), aliases: false)
+output, status = Open3.capture2(ENV.fetch("JOBMAN_CONFIG_PYTHON", "python3"), File.join(root, "scripts", "lab-config.py"), "document")
+abort "invalid synthetic Lab configuration" unless status.success?
+document = JSON.parse(output)
+topology = document.fetch("topology")
+versions = document.fetch("versions")
 nodes = topology.fetch("nodes")
 domain = topology.dig("lab", "domain")
 selected_group = ENV.fetch("JOBMAN_LAB_GROUP", "full")
+abort "Lab group must be core or full" unless %w[core full].include?(selected_group)
 allowed_groups = selected_group == "core" ? ["core"] : ["core", "full"]
 
 Vagrant.configure("2") do |config|

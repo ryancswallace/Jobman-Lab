@@ -1,9 +1,18 @@
 ---
 lab:
+  synthetic: true
   name: jobman-lab
   domain: lab.test
   namespace: research
   provider: parallels
+  services:
+    oidc_audience: jobman-control
+    artifact_store: lab-nfs
+    artifact_store_version: 1
+    upstream_ntp: 2.almalinux.pool.ntp.org
+    motd: ""
+    slurm_partition: cpu
+    slurm_max_time: INFINITE
   network:
     cidr: 10.77.0.0/24
     gateway: 10.77.0.1

@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
+CONFIG_PYTHON ?= python3
 
 LAB_GROUP ?= full
 VAGRANT_ENV := JOBMAN_LAB_GROUP=$(LAB_GROUP) VAGRANT_DEFAULT_PROVIDER=parallels
@@ -10,6 +11,14 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY := YES
 
 help: ## Show supported lab operations.
 	@awk 'BEGIN {FS = ":.*## "; printf "Jobman local lab\n\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+.PHONY: config-test config-schema
+config-test: ## Test offline deployment composition without accessing Lab state.
+	PYTHONDONTWRITEBYTECODE=1 $(CONFIG_PYTHON) scripts/test-jobman-config.py
+	PYTHONDONTWRITEBYTECODE=1 $(CONFIG_PYTHON) scripts/test-lab-config.py
+
+config-schema: ## Print the versioned generic deployment schema.
+	$(CONFIG_PYTHON) scripts/jobman-config.py schema
 
 bootstrap: check-host verify-sources ## Prepare host tools and ignored lab state.
 	./scripts/init-state.sh

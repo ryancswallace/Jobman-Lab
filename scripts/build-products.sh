@@ -3,9 +3,11 @@ set -euo pipefail
 
 lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 artifact_root="$lab_root/.lab/artifacts"
-jobman_repo='/Users/rcw/home/code/jobman'
-control_repo='/Users/rcw/home/code/jobman-control'
-toolchain='go1.26.6'
+# shellcheck source=scripts/lab-config.sh
+source "$lab_root/scripts/lab-config.sh"
+jobman_repo="$(lab_config_value versions.products.jobman_repo --absolute)"
+control_repo="$(lab_config_value versions.products.jobman_control_repo --absolute)"
+toolchain="go$(lab_config_value versions.guest_software.go)"
 
 mkdir -p "$artifact_root/bin/linux-arm64" "$artifact_root/bin/windows-arm64"
 

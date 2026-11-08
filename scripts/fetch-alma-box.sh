@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-box_name='almalinux/9'
-box_version='9.8.20260810'
-box_checksum='8f10c585e8ed38738dd3150ee06c45206c1ebf33444fe699fbc4f72d8be36380'
+lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lab-config.sh
+source "$lab_root/scripts/lab-config.sh"
+box_name="$(lab_config_value versions.images.alma_box)"
+box_version="$(lab_config_value versions.images.alma_box_version)"
+box_checksum="$(lab_config_value versions.images.alma_box_sha256)"
 
 if vagrant box list --machine-readable | awk -F, \
   -v expected_name="$box_name" \
