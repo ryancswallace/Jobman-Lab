@@ -1,5 +1,10 @@
 # Jobman local lab
 
+Reusable offline deployment composition is described in
+[External deployment configuration](docs/DEPLOYMENT_CONFIGURATION.md). Install
+the pinned `config/requirements.txt` dependencies before using its configuration
+loader. Machine-specific paths can live in an external `JOBMAN_LAB_CONFIG_ROOT`.
+
 This repository builds a synthetic, production-shaped Jobman test environment
 on an Apple Silicon Mac with Parallels Desktop Pro. The lab is completely
 defined by Vagrant, Packer, Ansible, checked-in topology data, and bounded

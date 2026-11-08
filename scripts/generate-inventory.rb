@@ -2,26 +2,26 @@
 # frozen_string_literal: true
 
 require "open3"
+require "json"
 require "shellwords"
 require "yaml"
 
 root = File.expand_path("..", __dir__)
-topology = YAML.safe_load(File.read(File.join(root, "config", "topology.yml")), aliases: false)
+python = ENV.fetch("JOBMAN_CONFIG_PYTHON", "python3")
+output, status = Open3.capture2(python, File.join(root, "scripts", "lab-config.py"), "document")
+abort "invalid synthetic Lab configuration" unless status.success?
+topology = JSON.parse(output).fetch("topology")
+output, status = Open3.capture2(python, File.join(root, "scripts", "lab-config.py"), "inventory-vars")
+abort "invalid synthetic Lab inventory configuration" unless status.success?
+variables = JSON.parse(output)
 group = ENV.fetch("LAB_GROUP", ENV.fetch("JOBMAN_LAB_GROUP", "full"))
+abort "Lab group must be core or full" unless %w[core full].include?(group)
 selected_groups = group == "core" ? ["core"] : ["core", "full"]
 nodes = topology.fetch("nodes").select { |_name, node| selected_groups.include?(node.fetch("group")) }
 
 inventory = {
   "all" => {
-    "vars" => {
-      "lab_root" => root,
-      "lab_domain" => topology.dig("lab", "domain"),
-      "lab_namespace" => topology.dig("lab", "namespace"),
-      "lab_network_cidr" => topology.dig("lab", "network", "cidr"),
-      "lab_users" => topology.dig("lab", "users"),
-      "lab_nodes" => nodes.transform_values { |node| node.slice("role", "address") },
-      "lab_storage" => topology.fetch("storage")
-    },
+    "vars" => variables.merge("lab_root" => root, "lab_nodes" => nodes),
     "children" => {
       "linux" => { "hosts" => {} },
       "windows" => { "hosts" => {} }

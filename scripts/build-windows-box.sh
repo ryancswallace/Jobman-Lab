@@ -3,8 +3,10 @@ set -euo pipefail
 
 lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 state_root="$lab_root/.lab"
-iso='/Users/rcw/Downloads/Win11_25H2_English_Arm64_v2.iso'
-iso_sha='638aa2c88e94385b00f4f178d071e3df0b7d9e335577a83bd533b7f2eb65adf0'
+# shellcheck source=scripts/lab-config.sh
+source "$lab_root/scripts/lab-config.sh"
+iso="$(lab_config_value versions.images.windows_iso --absolute)"
+iso_sha="$(lab_config_value versions.images.windows_iso_sha256)"
 box="$state_root/boxes/windows-11-arm64-parallels.box"
 
 "$lab_root/scripts/init-state.sh"

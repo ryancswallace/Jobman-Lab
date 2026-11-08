@@ -5,13 +5,13 @@
    map to guest = never
    server min protocol = SMB3_00
    smb encrypt = desired
-   hosts allow = 127. 10.77.0.
+   hosts allow = 127.0.0.1 {{ lab_network_cidr }}
    hosts deny = 0.0.0.0/0
    log file = /var/log/samba/%m.log
    max log size = 1000
 
-[data]
-   path = /srv/lab/data
+[{{ lab_storage.data.smb_share }}]
+   path = {{ lab_storage.data.server_path }}
    browseable = yes
    read only = no
    valid users = @labusers
@@ -19,8 +19,8 @@
    create mask = 0660
    directory mask = 2770
 
-[shared]
-   path = /srv/lab/shared
+[{{ lab_storage.shared.smb_share }}]
+   path = {{ lab_storage.shared.server_path }}
    browseable = yes
    read only = no
    valid users = @labusers
@@ -28,8 +28,8 @@
    create mask = 0660
    directory mask = 2770
 
-[home]
-   path = /srv/lab/home
+[{{ lab_storage.home.smb_share }}]
+   path = {{ lab_storage.home.server_path }}
    browseable = no
    read only = no
    valid users = @labusers
