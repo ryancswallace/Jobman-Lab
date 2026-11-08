@@ -276,11 +276,21 @@ func (r *runner) run() error {
 		return r.command("", expected, "jobman", append([]string{"--config", "/work/client.yaml", "--state-dir", "/work/client", "shared"}, args...)...)
 	}
 	r.step = "shared job submission"
-	job, err := shared(0, "run", "--name", "evaluation-restart", "--target", "evaluation-host", "--", "/bin/sh", "-c", "printf 'evaluation-start\\n'; sleep 15; printf 'evaluation-complete\\n'")
+	job, err := shared(0, "run", "--json", "--name", "evaluation-restart", "--target", "evaluation-host", "--", "/bin/sh", "-c", "printf 'evaluation-start\\n'; sleep 15; printf 'evaluation-complete\\n'")
 	if err != nil {
 		return err
 	}
-	jobID := strings.TrimSpace(string(job))
+	var submitted struct {
+		Job struct {
+			Metadata struct {
+				ID string `json:"id"`
+			} `json:"metadata"`
+		} `json:"job"`
+	}
+	if err = json.Unmarshal(job, &submitted); err != nil {
+		return errors.New("shared submission JSON invalid")
+	}
+	jobID := submitted.Job.Metadata.ID
 	if len(jobID) != 36 {
 		return errors.New("job identity invalid")
 	}
