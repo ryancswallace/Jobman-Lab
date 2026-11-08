@@ -17,7 +17,7 @@ images:
   windows_iso_sha256: 638aa2c88e94385b00f4f178d071e3df0b7d9e335577a83bd533b7f2eb65adf0
 
 guest_software:
-  go: 1.26.6
+  go: 1.26.10
   slurm: 25.05.8
   slurm_url: https://download.schedmd.com/slurm/slurm-25.05.8.tar.bz2
   slurm_sha256: 21ddc614396e7e0b1ba792841f182b4c5b24949b116cb509a3a650fc6fcc22b6
