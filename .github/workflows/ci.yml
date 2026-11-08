@@ -37,6 +37,7 @@ jobs:
       - name: Validate and compile the isolated evaluation harness
         run: |
           test -z "$(gofmt -l evaluation/*.go)"
+          GOWORK=off go -C evaluation test ./...
           CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/evaluation-smoke" evaluation/smoke.go
 
       - name: Install Ansible and ShellCheck

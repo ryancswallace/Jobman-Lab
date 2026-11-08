@@ -35,6 +35,23 @@ type runner struct {
 	step string
 }
 
+func submittedJobID(data []byte) (string, error) {
+	var submitted struct {
+		SchemaVersion int `json:"schema_version"`
+		Data          struct {
+			Job struct {
+				Metadata struct {
+					ID string `json:"id"`
+				} `json:"metadata"`
+			} `json:"job"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &submitted); err != nil || submitted.SchemaVersion != 1 || len(submitted.Data.Job.Metadata.ID) != 36 {
+		return "", errors.New("shared submission envelope or identity invalid")
+	}
+	return submitted.Data.Job.Metadata.ID, nil
+}
+
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -280,19 +297,9 @@ func (r *runner) run() error {
 	if err != nil {
 		return err
 	}
-	var submitted struct {
-		Job struct {
-			Metadata struct {
-				ID string `json:"id"`
-			} `json:"metadata"`
-		} `json:"job"`
-	}
-	if err = json.Unmarshal(job, &submitted); err != nil {
-		return errors.New("shared submission JSON invalid")
-	}
-	jobID := submitted.Job.Metadata.ID
-	if len(jobID) != 36 {
-		return errors.New("job identity invalid")
+	jobID, err := submittedJobID(job)
+	if err != nil {
+		return err
 	}
 	r.step = "shared job dispatch"
 	statusPath := "/v1/namespaces/evaluation/jobs/" + jobID
