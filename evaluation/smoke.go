@@ -40,7 +40,7 @@ func main() {
 	defer cancel()
 	r := &runner{ctx: ctx, env: []string{"PATH=/inputs/bin:/bin:/usr/bin", "HOME=/work/home", "USER=nobody", "JOBMAN_NO_EXTENSIONS=1"}}
 	if err := r.run(); err != nil {
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"passed": false, "step": r.step})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"passed": false, "step": r.step, "reason": err.Error()})
 		fmt.Fprintln(os.Stderr, "synthetic evaluation failed:", r.step, err)
 		os.Exit(1)
 	}
@@ -275,7 +275,7 @@ func (r *runner) run() error {
 	shared := func(expected int, args ...string) ([]byte, error) {
 		return r.command("", expected, "jobman", append([]string{"--config", "/work/client.yaml", "--state-dir", "/work/client", "shared"}, args...)...)
 	}
-	r.step = "shared execution and agent restart"
+	r.step = "shared job submission"
 	job, err := shared(0, "run", "--name", "evaluation-restart", "--target", "evaluation-host", "--", "/bin/sh", "-c", "printf 'evaluation-start\\n'; sleep 15; printf 'evaluation-complete\\n'")
 	if err != nil {
 		return err
@@ -284,6 +284,7 @@ func (r *runner) run() error {
 	if len(jobID) != 36 {
 		return errors.New("job identity invalid")
 	}
+	r.step = "shared job dispatch"
 	statusPath := "/v1/namespaces/evaluation/jobs/" + jobID
 	started := false
 	for range 100 {
