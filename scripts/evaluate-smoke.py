@@ -12,6 +12,23 @@ import uuid
 
 from evaluation import ROOT, capture, digest, read_manifest, require
 
+LABEL = 'dev.jobman.evaluation.operation'
+
+
+def cleanup(operation):
+    """Delete immutable IDs selected by our operation label, never guessed names."""
+    containers = capture(['docker', 'ps', '-a', '--filter', 'label=' + LABEL + '=' + operation,
+                          '--quiet', '--no-trunc']).decode().split()
+    networks = capture(['docker', 'network', 'ls', '--filter', 'label=' + LABEL + '=' + operation,
+                        '--quiet', '--no-trunc']).decode().split()
+    require(len(containers) <= 2 and len(networks) <= 1
+            and all(re.fullmatch('[a-f0-9]{64}', value) for value in containers + networks),
+            'Owned-resource inventory is unavailable or unexpected')
+    for identity in containers:
+        capture(['docker', 'rm', '-f', identity], timeout=30)
+    for identity in networks:
+        capture(['docker', 'network', 'rm', identity], timeout=30)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -30,9 +47,11 @@ def main():
         require(re.fullmatch('docker.io/library/' + repository + '@sha256:[a-f0-9]{64}', image),
                 'Runtime image must be the selected immutable official image')
     require(re.fullmatch(r'go1\.[0-9]+\.[0-9]+', runtime['goToolchain']), 'Exact Go toolchain is required')
-    suffix = uuid.uuid4().hex[:16]
+    operation = uuid.uuid4().hex
+    suffix = operation[:16]
     network, database, runner = ['jobman-evaluation-' + suffix + '-' + role for role in ('net', 'db', 'run')]
-    receipt = {'schemaVersion': 1, 'passed': False, 'selectionSHA256': digest(args.manifest),
+    receipt = {'schemaVersion': 1, 'passed': False, 'operationId': operation,
+               'selectionSHA256': digest(args.manifest),
                'labRevision': capture(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
                'harnessSHA256': digest(ROOT / 'evaluation/smoke.go'), 'runtime': runtime}
     try:
@@ -48,6 +67,7 @@ def main():
                             'Executable changed after verification')
                     shutil.copyfile(source, payload / 'bin' / name)
                     (payload / 'bin' / name).chmod(0o755)
+                    require(digest(payload / 'bin' / name) == item['sha256'], 'Executable changed during staging')
             dashboard = manifest['products']['dashboard']['executables']['jobman-dashboard']['path']
             web = (args.inputs / 'dashboard/unpacked' / dashboard).parent.parent / 'web'
             require(web.is_dir() and not web.is_symlink(), 'Selected Dashboard web payload is absent')
@@ -60,16 +80,20 @@ def main():
             receipt['driverSHA256'] = digest(driver)
             for image in (runtime['runnerImage'], runtime['postgresImage']):
                 capture(['docker', 'pull', '--platform', manifest['platform'], image], timeout=600)
-            capture(['docker', 'network', 'create', '--internal', network])
+            capture(['docker', 'network', 'create', '--internal', '--label', LABEL + '=' + operation, network])
             capture(['docker', 'run', '-d', '--name', database, '--network', network, '--network-alias', 'postgres',
-                     '--user', 'postgres:postgres', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                     '--label', LABEL + '=' + operation, '--user', 'postgres:postgres', '--read-only',
+                     '--memory', '512m', '--cpus', '2', '--pids-limit', '128',
+                     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                      '--tmpfs', '/var/lib/postgresql/data:rw,uid=70,gid=70,mode=0700', '--tmpfs', '/var/run/postgresql:rw,uid=70,gid=70',
                      '-e', 'POSTGRES_PASSWORD=evaluation-only', '-e', 'POSTGRES_DB=evaluation', runtime['postgresImage']], timeout=60)
             # The fresh database is the only endpoint available on this internal network.
             capture(['docker', 'exec', database, 'sh', '-c',
                      'for n in $(seq 1 60); do pg_isready -h 127.0.0.1 -U postgres -d evaluation >/dev/null && exit 0; sleep 1; done; exit 1'], timeout=70)
             output = capture(['docker', 'run', '--rm', '--name', runner, '--network', network, '--hostname', 'jobman-evaluation',
-                              '--platform', manifest['platform'], '--user', '65534:65534', '--read-only', '--cap-drop', 'ALL',
+                              '--platform', manifest['platform'], '--label', LABEL + '=' + operation,
+                              '--user', '65534:65534', '--read-only', '--memory', '512m', '--cpus', '2',
+                              '--pids-limit', '128', '--cap-drop', 'ALL',
                               '--security-opt', 'no-new-privileges', '--tmpfs', '/work:rw,uid=65534,gid=65534,mode=0700',
                               '--mount', f'type=bind,source={payload},target=/inputs,readonly',
                               '--mount', f'type=bind,source={driver},target=/smoke,readonly',
@@ -79,12 +103,16 @@ def main():
             require(result.get('passed') is True, 'Synthetic smoke did not pass')
             receipt['passed'] = True
     finally:
-        for name in (runner, database):
-            subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        subprocess.run(['docker', 'network', 'rm', network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        receipt['cleanupComplete'] = False
+        try:
+            cleanup(operation)
+            receipt['cleanupComplete'] = True
+        except (ValueError, OSError, subprocess.SubprocessError):
+            receipt['passed'] = False
         with args.output.open('x') as output:
             json.dump(receipt, output, indent=2)
             output.write('\n')
+    require(receipt['passed'], 'Owned-resource cleanup requires inspection')
     print(json.dumps({'passed': True, 'platform': manifest['platform'], 'selectionSHA256': receipt['selectionSHA256']}))
 
 
