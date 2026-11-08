@@ -6,6 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -129,6 +130,28 @@ class RecoveryTests(unittest.TestCase):
             run.return_value.returncode = 0
             self.assertEqual(guest.recover('host', self.pending), status())
         run.assert_called_once_with(['systemctl', 'start', 'jobman-dashboard-execution-host.service'], timeout=20)
+
+    def test_recovery_help_accepts_go_help_exit_but_rejects_old_binary(self):
+        for code, output, supported in (
+                (1, b'Usage of jobman-agent recover:\nflag: help requested\n', True),
+                (1, b'unknown command: recover\n', False),
+                (0, b'Usage of jobman-agent:\n', False),
+                (2, b'Usage of jobman-agent recover:\n', False)):
+            with self.subTest(code=code, output=output), patch.object(guest, 'run',
+                    return_value=subprocess.CompletedProcess([], code, b'', output)):
+                if supported:
+                    guest.require_recovery_support('/test/agent')
+                else:
+                    with self.assertRaises(RuntimeError):
+                        guest.require_recovery_support('/test/agent')
+
+    def test_slurm_runner_path_does_not_replace_agent_command(self):
+        agent = '/usr/local/libexec/jobman-dashboard-lab/jobman-agent-execution-' + 'a' * 64
+        runner = '/usr/local/libexec/jobman-dashboard-lab/jobman-agent-execution-' + 'b' * 64
+        command = ('{ path=' + agent + ' ; argv[]=' + agent + ' run --slurm-runner ' + runner + ' ; }').encode()
+        self.assertEqual(guest.agent_binary(command), agent)
+        with self.assertRaises(RuntimeError):
+            guest.agent_binary(command.replace(('path=' + agent).encode(), b'path=/bin/sh'))
 
     def test_guest_refuses_receipt_identity_change_or_ambiguous_restart(self):
         receipt_path = self.root / '.recovered-host.json'

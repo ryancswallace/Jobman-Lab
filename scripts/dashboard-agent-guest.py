@@ -98,6 +98,21 @@ def unit(kind):
     return 'jobman-dashboard-execution-' + kind + '.service'
 
 
+def require_recovery_support(binary):
+    result = run([binary, 'recover', '--help'])
+    # Go's flag parser reports requested subcommand help with exit status 1.
+    require(result.returncode in (0, 1) and
+            b'Usage of jobman-agent recover:' in result.stdout + result.stderr,
+            'Install a Jobman agent with credential recovery support first')
+
+
+def agent_binary(command):
+    match = re.match(rb'\{\s*path=(/usr/local/libexec/jobman-dashboard-lab/jobman-agent-execution-[a-f0-9]{64})\s*;', command)
+    require(match is not None, 'Expected isolated content-addressed agent binary')
+    # Slurm's runner argument may intentionally point to a different build.
+    return match.group(1).decode()
+
+
 def journal_identity(state, owner=21001):
     # Existing child runners may publish progress while the service is stopped.
     # Verify the journal inode and immutable execution identities, not mutable
@@ -140,13 +155,10 @@ def recover(kind, request):
             'Agent already active with valid credentials but no matching receipt; retain pending state and reconcile before stopping work')
     raw = run(['systemctl', 'show', unit(kind), '--property=ExecStart', '--value'])
     require(raw.returncode == 0, 'Cannot inspect agent command')
-    paths = set(re.findall(rb'/usr/local/libexec/jobman-dashboard-lab/jobman-agent-execution-[a-f0-9]{64}', raw.stdout))
-    require(len(paths) == 1, 'Expected isolated content-addressed agent binary')
-    binary = paths.pop().decode()
+    binary = agent_binary(raw.stdout)
     require(hashlib.sha256(Path(binary).read_bytes()).hexdigest() == binary[-64:],
             'Agent binary digest differs')
-    require(run([binary, 'recover', '--help']).returncode == 0,
-            'Install a Jobman agent with credential recovery support first')
+    require_recovery_support(binary)
     kill_mode = run(['systemctl', 'show', unit(kind), '--property=KillMode', '--value'])
     require(kill_mode.returncode == 0 and kill_mode.stdout.strip() == b'process',
             'Agent unit must use KillMode=process to preserve execution runners during recovery')
