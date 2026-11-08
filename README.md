@@ -175,6 +175,10 @@ To submit your own bounded CLI jobs and watch them in the web or iPhone app,
 follow [Dashboard CLI testing](docs/DASHBOARD_CLI_TESTING.md). It uses the
 monitored `dashboard-operations` namespace, a private synthetic-Alice sign-in
 helper, and the real host/Slurm execution targets.
+Once configured, `make ensure-running` and `make converge` recover expired
+Dashboard agent credentials with fresh authorized tokens while retaining agent
+identities and execution journals. `make dashboard-agents-check` inspects local
+service/credential state; `make dashboard-agents` runs recovery explicitly.
 
 `make test` refreshes short-lived OIDC tokens, idempotently configures the
 namespace and targets, enrolls missing Alice/Bob agents, then verifies:

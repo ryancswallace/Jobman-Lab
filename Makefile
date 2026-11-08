@@ -47,8 +47,16 @@ build-products: ## Cross-build Jobman, Jobman Agent, and Jobman Control from sib
 ensure-vms:
 	./scripts/vagrant-up.sh $(LAB_GROUP)
 
-ensure-running: ensure-vms ## Start/resume VMs and the configured iPhone gateway.
+ensure-running: ensure-vms ## Start/resume VMs, recover configured Dashboard agents, and start the iPhone gateway.
+	python3 scripts/dashboard-agents.py ensure --if-configured
 	python3 scripts/iphone-gateway.py start --if-configured
+
+.PHONY: dashboard-agents dashboard-agents-check
+dashboard-agents: ## Recover expired synthetic Dashboard agents without resetting execution state.
+	python3 scripts/dashboard-agents.py ensure
+
+dashboard-agents-check: ## Check Dashboard agent services, sessions and certificates.
+	python3 scripts/dashboard-agents.py check
 
 inventory: ensure-vms ## Generate Ansible inventory from config/topology.yml and Vagrant SSH/WinRM data.
 	LAB_GROUP=$(LAB_GROUP) ./scripts/generate-inventory.rb
@@ -64,6 +72,7 @@ up-full: images ## Create the complete Linux and Windows topology.
 converge: build-products fetch-artifacts inventory ## Apply guest configuration, then start the configured phone gateway.
 	python3 scripts/ensure-oidc-tls.py
 	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/site.yml
+	python3 scripts/dashboard-agents.py ensure --if-configured
 	python3 scripts/iphone-gateway.py start --if-configured
 
 configure-control: ## Create synthetic OIDC realm, namespace, memberships, stores, and targets.

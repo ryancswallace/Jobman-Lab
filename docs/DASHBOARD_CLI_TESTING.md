@@ -120,12 +120,31 @@ versioned JSON request formats.
 
 - An empty list usually means the wrong deployment/namespace or an active
   filter. Use `Synthetic Dashboard Lab` / `dashboard-operations`, or the aggregate view.
-- A job remaining accepted needs a healthy execution agent. On `control01`,
+- A job remaining accepted needs a healthy execution agent. Run
+  `make dashboard-agents-check`; use `make dashboard-agents` to recover expired
+  credentials through a fresh synthetic Alice sign-in. Normal `ensure-running`
+  and `converge` do this automatically after CLI testing is configured. On `control01`,
   the host service is `jobman-dashboard-execution-host`; on `submit01`, the
   Slurm service is `jobman-dashboard-execution-slurm`. Both are enabled for
-  startup. Agent credentials are short-lived; a long shutdown can require
-  fresh enrollment through Control. Do not extend certificate validity or
-  delete an enrollment directory to hide an expiry failure.
+  startup. Recovery retains the same agent identity, target generation and
+  execution journal. It requires a recovery-capable Control and agent; no
+  certificate lifetime or trust check is relaxed. Existing tokens and execution
+  state are not reset. A revoked agent/certificate, target-generation change or
+  lost authorization needs explicit operator reconciliation.
+  The two Linux agent units use `KillMode=process` so stopping the polling service
+  leaves existing execution runners alive; recovery refuses an older unit with
+  control-group shutdown semantics. Execution identities stay unchanged while
+  an existing runner can continue advancing its state and logs.
+- An interrupted recovery retains its exact token and operation privately under
+  `.lab/dashboard/agent-recovery/`; rerun the same command. Do not delete pending
+  recovery state or issue a different token to hide an uncertain result. If that
+  token has expired, inspect the service and retained operation before an operator
+  supplies another token. Successful guest receipts are private, contain no token,
+  and allow a lost SSH response to be retried without stopping new work.
+  If credentials changed and the service restarted before the guest receipt was
+  saved, recovery refuses to stop that service automatically; reconcile the
+  retained operation before interrupting any new work. The agent check reports
+  local service/credential state, not server authorization or successful dispatch.
 - The helper refreshes the token for each command. For an unusually long
   `wait`, run `jobman_lab login` in another Terminal to refresh the shared
   token, or run a new status/wait command. Jobman rereads that file per request.
