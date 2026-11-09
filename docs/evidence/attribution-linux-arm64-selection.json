@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/arm64",
+  "products": {
+    "core": {
+      "repository": "ryancswallace/Jobman",
+      "version": "v1.10.1",
+      "commit": "7b3a37257d66b1e4fd73fb26795e09e5a063b4a0",
+      "executables": {
+        "jobman": {
+          "path": "jobman",
+          "sha256": "0117e56229eb5b7a7f1cd08ad6ce74a08b13aa250693b05aff6138c471ef1291"
+        },
+        "jobman-agent": {
+          "path": "jobman-agent",
+          "sha256": "4d7afd91808ad8f1cb639fc1fe0ac726faaa5dd9bf96cdb69f48db06f071ef8b"
+        }
+      },
+      "archive": {
+        "name": "jobman_1.10.1_linux_arm64.tar.gz",
+        "sha256": "88044ec04c7262aef47933e25c80d834c93f78c18aa849b12298a12da46b9156"
+      },
+      "sbom": {
+        "name": "jobman_1.10.1_linux_arm64.tar.gz.sbom.json",
+        "sha256": "de7d44d63eb4d84b9f8c9b7b537ee74f67e27ed6f8c7589306dc69c8ba272f80"
+      },
+      "checksums": {
+        "name": "jobman_1.10.1_checksums.txt",
+        "sha256": "d54bc4b0ba525f1defc27956ae133a7e7d200ebbc1929a49beb9edcdf1f717b3"
+      }
+    },
+    "control": {
+      "repository": "ryancswallace/Jobman-Control",
+      "version": "v0.3.1",
+      "commit": "30fcab6f1119781ddf61516f058a854a2c38409a",
+      "executables": {
+        "jobman-control": {
+          "path": "jobman-control",
+          "sha256": "01e4fce8769a49f526e7f98c221d05e9da84e675b2ee45610e570368bec8a1df"
+        }
+      },
+      "archive": {
+        "name": "jobman-control_0.3.1_linux_arm64.tar.gz",
+        "sha256": "23525cec5838ad4a6f78801ab419ec235a3411c56049fca106248f7351de4d1b"
+      },
+      "sbom": {
+        "name": "jobman-control_0.3.1_linux_arm64.tar.gz.sbom.json",
+        "sha256": "ad1eec3448c0dd02c235b9c586b62eff03cfd87d6e210d9ffd951af91165d449"
+      },
+      "checksums": {
+        "name": "jobman-control_0.3.1_checksums.txt",
+        "sha256": "47d477543bacd0ec5bf0f5960e1169089ec2fe28f661e137f4a3eef8a5452e23"
+      }
+    },
+    "diagnose": {
+      "repository": "ryancswallace/Jobman-Diagnose",
+      "version": "v0.7.0-rc.3",
+      "commit": "f6fb0678754e55b6d8fa97576238656d8041a84e",
+      "executables": {
+        "jobman-diagnose": {
+          "path": "jobman-diagnose",
+          "sha256": "0fd171ed9887c230315006fd4875e14f906427a327be38497b38d6fd58bdbfb5"
+        }
+      },
+      "archive": {
+        "name": "jobman-diagnose_0.7.0-rc.3_linux_arm64.tar.gz",
+        "sha256": "bca4ed1bc4c49ef1164b34481402b75b452e759adc29760ea06f8ba9369aa937"
+      },
+      "sbom": {
+        "name": "jobman-diagnose_0.7.0-rc.3_linux_arm64.tar.gz.sbom.json",
+        "sha256": "788ce52f6abd1b2ab7c5549db707c8874fab261432b7526c97d7642dacc3bd79"
+      },
+      "checksums": {
+        "name": "jobman-diagnose_0.7.0-rc.3_checksums.txt",
+        "sha256": "ea5f85f3d731c744ced6d650d8cd6d46f5b294810fecc05ee478396a8d2a0d14"
+      }
+    },
+    "dashboard": {
+      "repository": "ryancswallace/Jobman-Dashboard",
+      "version": "v0.1.0",
+      "commit": "1fd9d3451ba38f751a40e72bd66f5695f9f126fd",
+      "executables": {
+        "jobman-dashboard": {
+          "path": "jobman-dashboard_v0.1.0_linux_arm64/bin/jobman-dashboard",
+          "sha256": "3c825a7476c8d68436f5f7264fb7efbbbe148f18783c280870ca760de45a00af"
+        },
+        "jobman-log-broker": {
+          "path": "jobman-dashboard_v0.1.0_linux_arm64/bin/jobman-log-broker",
+          "sha256": "89ef7f969ff5e0b87beb18ca3e92a3803a97f9529ab697ae1f738c3486555232"
+        }
+      },
+      "archive": {
+        "name": "jobman-dashboard_v0.1.0_linux_arm64.tar.gz",
+        "sha256": "33a8c3aa747f15d0e2ad1a8834ed8ad0b3ec0a3db2bdb72fad427657db98e729"
+      },
+      "sbom": {
+        "name": "jobman-dashboard_v0.1.0_linux_arm64.tar.gz.spdx.json",
+        "sha256": "f263846300dcd4b8b9328d1f134b2615d26f0153306a6a7addcb177fa9a1c849"
+      },
+      "checksums": {
+        "name": "SHA256SUMS",
+        "sha256": "54a01e6bf475ff57cdbde13a812617aac1f94c45e62a1d63da539a90da154294"
+      }
+    }
+  }
+}

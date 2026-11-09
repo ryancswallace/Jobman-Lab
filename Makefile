@@ -23,6 +23,7 @@ config-schema: ## Print the versioned generic deployment schema.
 .PHONY: evaluation-test evaluation-fetch evaluation-smoke
 evaluation-test: ## Validate release evaluation integrity and source-selection boundaries offline.
 	PYTHONDONTWRITEBYTECODE=1 $(CONFIG_PYTHON) scripts/test-evaluation.py
+	PYTHONDONTWRITEBYTECODE=1 $(CONFIG_PYTHON) scripts/test-attribution.py
 
 evaluation-fetch: ## Download and attest the explicit MANIFEST into a new OUTPUT directory.
 	$(CONFIG_PYTHON) scripts/evaluation.py fetch --manifest "$(MANIFEST)" --output "$(OUTPUT)"
