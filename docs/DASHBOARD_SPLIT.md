@@ -1,9 +1,11 @@
-# Prepared API/worker split for the synthetic Lab
+# Historical Dashboard API/worker cutover
 
-This is a staged migration plan, not a record that the split has been applied.
-Preparation makes no guest connection, database change or service change. The
-reviewed exact candidate and a fresh live preflight are required before a separate
-apply operation. Production systems are outside this plan.
+This runbook preserves the exact synthetic Lab migration and the
+[October 4 cutover results](#recorded-primary-lab-cutover-2026-10-04).
+For current releases, use the published
+[Dashboard installation guide](https://github.com/ryancswallace/Jobman-Dashboard/blob/main/docs/LINUX_INSTALLATION.md).
+Any replay of this Lab procedure requires the exact candidate, fresh live
+preflight, and separate apply review.
 
 The first split keeps one API and one worker bundle on storage01. The worker runs
 ingestion, rule activation/evaluation, diagnosis and retention. It has no APNs

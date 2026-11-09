@@ -35,7 +35,7 @@ minute and seven days old.
 
 Archive these three implementation files and their printed digest together with
 this runbook and `test-dashboard-scale-source.py`. Run from that immutable
-archive, with `--lab-root /Users/rcw/home/code/jobman-lab`; SSH uses the existing
+archive, with `--lab-root /absolute/path/to/jobman-lab`; SSH uses the existing
 pinned inventory and host keys. `--phase digest` prints only code hashes.
 
 Use a root-private0700 host parent and a fresh staging directory for each

@@ -11,7 +11,7 @@ walkthrough, use **shared mode**, the primary Dashboard deployment, and the
 From the Mac:
 
 ```sh
-cd /Users/rcw/home/code/jobman-lab
+cd /absolute/path/to/jobman-lab
 make LAB_GROUP=full ensure-running
 make iphone-check
 ```
@@ -26,8 +26,8 @@ Define this convenience function in Terminal:
 
 ```sh
 jobman_lab() {
-  python3 /Users/rcw/home/code/jobman-lab/scripts/dashboard-cli.py \
-    --lab-root /Users/rcw/home/code/jobman-lab "$@"
+  python3 /absolute/path/to/jobman-lab/scripts/dashboard-cli.py \
+    --lab-root /absolute/path/to/jobman-lab "$@"
 }
 
 jobman_lab target list

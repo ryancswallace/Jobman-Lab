@@ -1,9 +1,10 @@
-# Disposable Dashboard installation and compatible rollback acceptance
+# Dashboard candidate installation and rollback exercises
 
-This is an opt-in Lab procedure. The scripts are prepared for independent review;
-no fresh installation or rollback acceptance has been run. The operator chooses
-**two separately reviewed candidate packages** after the output-bound repair
-`2e8f1b15c58889c52023d49d396fd600b31eecd2`. Both commits must descend from that repair,
+This Lab runbook records the prerelease attempts and the bounded
+[v3 procedure](#finite-v3-attempt-after-a-failed-transition). The earlier scopes
+did not complete the full upgrade and rollback sequence. For this experiment,
+choose **two separately reviewed candidate packages** after the output-bound
+repair `2e8f1b15c58889c52023d49d396fd600b31eecd2`. Both commits must descend from that repair,
 have distinct revisions, and contain the exact same 18 migration names/checksums
 and identical role-grant generator inputs. No pre-fix candidate is recommended.
 This exercises supported application rollback at an unchanged schema; it does not

@@ -66,7 +66,7 @@ Commands below contain only paths and public digests; use actual reviewed values
 
 ```sh
 python3 /absolute/archive/rotate-dashboard-auth.py snapshot \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --snapshot /absolute/private/snapshot.json
 python3 /absolute/archive/rotate-dashboard-auth.py prepare \
   --snapshot /absolute/private/snapshot.json \

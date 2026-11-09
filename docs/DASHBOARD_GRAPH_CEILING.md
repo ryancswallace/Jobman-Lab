@@ -56,7 +56,7 @@ Obtain the implementation digest without guest access:
 
 ```sh
 python3 /private/archive/scripts/prepare-dashboard-graph-ceiling.py \
-  --phase digest --lab-root /Users/rcw/home/code/jobman-lab
+  --phase digest --lab-root /absolute/path/to/jobman-lab
 ```
 
 Use one new host staging directory below an existing private owned parent.

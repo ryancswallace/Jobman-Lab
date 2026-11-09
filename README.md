@@ -79,9 +79,8 @@ PostgreSQL stores only Control metadata and durable intent.
 
 ## One-time host preparation
 
-1. Launch Parallels Desktop, sign in, and activate the Pro trial. Verify that
-   `prlsrvctl info --license` reports an installed Pro or Business license.
-   Merely installing the application does not activate the trial.
+1. Activate a Parallels Desktop Pro or Business license. Verify it with
+   `prlsrvctl info --license`.
 2. Install Vagrant in an interactive Terminal because its signed macOS package
    requires an administrator prompt:
 
@@ -89,8 +88,12 @@ PostgreSQL stores only Control metadata and durable intent.
    brew install --cask vagrant
    ```
 
-3. Confirm that the Windows ISO remains at
-   `/Users/rcw/Downloads/Win11_25H2_English_Arm64_v2.iso`.
+3. Install the Packer and Ansible versions pinned in
+   [config/versions.yml](config/versions.yml). In the
+   [external Lab configuration](docs/DEPLOYMENT_CONFIGURATION.md#synthetic-lab-adapter),
+   set `images.windows_iso` in `versions.yml` to the local Windows 11 ARM64 ISO.
+   `make verify-sources` checks it against `images.windows_iso_sha256` and
+   verifies the four configured product checkouts.
 4. From this repository, run:
 
    ```sh
@@ -100,19 +103,17 @@ PostgreSQL stores only Control metadata and durable intent.
 `bootstrap` verifies the host and ISO, installs the pinned
 `vagrant-parallels` plugin, installs the pinned Ansible collections and Packer
 plugins into `.lab/`, downloads the pinned Slurm source, and creates private
-synthetic keys and credentials. Packer 1.16.0 and Ansible 14.3.1 are already
-installed by Homebrew on the current host; `make tools` checks the exact
-versions rather than silently accepting drift.
+synthetic keys and credentials. `make tools` checks the exact host tool
+versions.
 
 No production credential or data is accepted by any workflow. The generated
 development CA is trusted only in lab guests.
 
 ## Create and operate the lab
 
-Build the base images and create the full topology:
+Create the full topology:
 
 ```sh
-make images
 make up-full
 make configure-control
 make enroll
@@ -122,7 +123,7 @@ make test
 `make up-full` is deliberately self-sufficient: it verifies/downloads images
 and artifacts, cross-builds the current local Jobman and Control source trees,
 creates the VMs, generates a strict host-key inventory, and converges all
-roles. It reads the three product repositories but does not edit them.
+roles. The product build uses the configured Core and Control source checkouts.
 
 For faster Linux-only work, use `make up-core`. It omits `linuxws01` and
 `winws01` but retains storage, Control, PostgreSQL, Slurm, submit, and compute

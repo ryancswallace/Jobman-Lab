@@ -15,7 +15,7 @@ canonical `/tmp` parent on Linux). Review the current driver, then invoke once:
 
 ```sh
 python3 /ABSOLUTE/REVIEWED/scripts/dashboard-dependency-faults.py prepare-records \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --records-root /private/tmp/jobman-dashboard-fault-records-REPLACE --apply
 ```
 

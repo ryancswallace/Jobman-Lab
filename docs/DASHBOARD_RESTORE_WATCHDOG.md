@@ -55,12 +55,12 @@ operations and evidence; no automatic cleanup or database restore is available.
 
 ```sh
 python3 /ABSOLUTE/ARCHIVE/scripts/dashboard-watchdog.py snapshot \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --revision EXACT_INSTALLED_DASHBOARD_COMMIT \
   --binary-sha256 EXACT_INSTALLED_DASHBOARD_SHA256 \
   --output /private/tmp/NEW-PRIVATE-PACKET/snapshot.json
 python3 /ABSOLUTE/ARCHIVE/scripts/dashboard-watchdog.py prepare \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --revision EXACT_INSTALLED_DASHBOARD_COMMIT \
   --binary-sha256 EXACT_INSTALLED_DASHBOARD_SHA256 \
   --snapshot /private/tmp/NEW-PRIVATE-PACKET/snapshot.json \
@@ -78,7 +78,7 @@ separately reviewed bound; nothing is silently omitted.
 
 ```sh
 python3 /ABSOLUTE/ARCHIVE/scripts/dashboard-watchdog.py stage \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --staging /private/tmp/NEW-PRIVATE-PACKET/prepared \
   --expected-plan-sha256 REVIEWED_PLAN_SHA256 \
   --expected-implementation-sha256 REVIEWED_IMPLEMENTATION_SHA256 --apply
@@ -105,7 +105,7 @@ From an immutable Dashboard source snapshot, build or run exactly
 
 - `JOBMAN_DASHBOARD_LAB_RUNTIME=1`
 - `JOBMAN_DASHBOARD_LAB_RESTORE_WATCHDOG=1`
-- `JOBMAN_DASHBOARD_LAB_ROOT=/Users/rcw/home/code/jobman-lab`
+- `JOBMAN_DASHBOARD_LAB_ROOT=/absolute/path/to/jobman-lab`
 - `JOBMAN_DASHBOARD_LAB_WATCHDOG_DRIVER=/ABSOLUTE/ARCHIVE/scripts/dashboard-watchdog.py`
 - `JOBMAN_DASHBOARD_LAB_WATCHDOG_STAGING=/private/tmp/NEW-PRIVATE-PACKET/prepared`
 - `JOBMAN_DASHBOARD_LAB_WATCHDOG_PLAN_SHA256` and
