@@ -24,6 +24,7 @@ python3 -c "import ast, pathlib; [ast.parse(p.read_text()) for root in ['scripts
 PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-jobman-config.py
 PYTHONDONTWRITEBYTECODE=1 "${JOBMAN_CONFIG_PYTHON:-python3}" scripts/test-lab-config.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-evaluation.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-attribution.py
 for test_script in scripts/test-dashboard-*.py; do
   PYTHONDONTWRITEBYTECODE=1 python3 "$test_script"
 done

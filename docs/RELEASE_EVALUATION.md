@@ -47,23 +47,28 @@ additional dependencies.
 ```sh
 python3 scripts/dependency-attribution.py \
   --inputs /absolute/verified-inputs --sources /absolute/pinned-sources \
+  --source-repositories /absolute/product-repositories \
   --wheels /absolute/pinned-python-wheels --npm-tarballs /absolute/pinned-npm-tarballs \
   --requirements /absolute/requirements.txt --output /absolute/new/attribution
 ```
 
-The script compares archive and binary hashes, reads the six executables'
-embedded module identities, and compares their module sets against the
-selected build inputs. Dashboard source maps count only when the rebuilt
-JavaScript bytes match the published archive. The recorded web inventory
-separates contributing packages from build and test packages. The script
-checks the registry integrity hash for each MPL build or test tarball.
-The original authenticated SPDX documents remain unchanged.
+Keep each selected commit available in the local `jobman`, `jobman-control`,
+`jobman-diagnose` or `jobman-dashboard` repository under `--source-repositories`.
+The evaluator compares the exports to read-only Git archives of those commits.
+Keep the module ZIPs available in the pinned toolchain's Go cache. The six
+executables' embedded module sums bind those ZIPs and each selected file's
+digest. Dashboard source maps count when the rebuilt JavaScript bytes match
+the published archive. A rendered browser graph from the same rebuild also
+records known injected helper code. The npm inventory separates contributing
+packages from build and test packages and checks registry integrity for each
+MPL build or test tarball. The report copies the original authenticated SPDX
+documents byte for byte into `original-spdx/`.
 
 The notice appendix uses exact upstream files. Its generated release
 inventory maps SPDX exceptions by digest and distinguishes source selection
 from notices carried in the archive. Any non-permissive detection still
-needs its file and distribution scope reviewed. Institutional redistribution
-decisions remain with the adopting organization.
+needs its file and distribution scope reviewed. The historical observations
+and accountable owners are recorded in [Dependency attribution evidence](DEPENDENCY_ATTRIBUTION.md).
 
 ## Cross-user filesystem verification
 

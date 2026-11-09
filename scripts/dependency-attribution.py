@@ -11,8 +11,10 @@ import re
 import subprocess
 import tarfile
 import urllib.parse
-import zipfile
 from pathlib import Path
+
+from attribution_sources import bound_file, checked_zip, module_source, verify_export
+from evaluation import new_output, read_manifest
 
 
 EXCEPTIONS = {
@@ -30,8 +32,12 @@ EXCEPTIONS = {
         ("pgproto3/notice_response.go", "PostgreSQL protocol source file covered by the module's MIT license"),
     ],
 }
-NOTICE = re.compile(r"^(license|licence|notice|copying|copyright|patents)(?:$|[._-])", re.I)
+NOTICE = re.compile(r"^(license|licence|notice|copying|copyright|patents|third[._-]party[._-](?:licenses?|notices?))(?:$|[._-])", re.I)
+TEXT_SUFFIXES = {"", ".txt", ".md", ".markdown", ".rst", ".html", ".htm"}
 BUILD_FILES = ("GoFiles", "CgoFiles", "SFiles", "CFiles", "CXXFiles", "HFiles", "SysoFiles", "EmbedFiles")
+HELPERS = {"rolldown/runtime.js": "node_modules/rolldown",
+           "vite/modulepreload-polyfill.js": "node_modules/vite",
+           "vite/preload-helper.js": "node_modules/vite"}
 
 
 def digest(data):
@@ -46,7 +52,7 @@ def checked_file(path, expected):
 
 
 def run_go(args, cwd=None, **settings):
-    env = dict(os.environ, GOENV="off", GOWORK="off", **settings)
+    env = dict(os.environ, GOENV="off", GOWORK="off", GOFLAGS="", **settings)
     env.pop("GOROOT", None)
     return subprocess.check_output(["go", *args], cwd=cwd, env=env, text=True)
 
@@ -64,7 +70,7 @@ def notice_paths(directory):
     return [
         file
         for file in sorted(directory.iterdir())
-        if file.is_file() and NOTICE.match(file.name) and file.suffix != ".go"
+        if file.is_file() and NOTICE.match(file.name) and file.suffix.lower() in TEXT_SUFFIXES
     ]
 
 
@@ -89,7 +95,7 @@ def include_notice(notices, identity, name, data):
     return {"path": name, "sha256": digest(data)}
 
 
-def go_executable(binary, source, commit, archive_docs, build_revision, notices):
+def go_executable(binary, source, source_hashes, commit, platform, archive_docs, build_revision, notices):
     build = json.loads(run_go(["version", "-m", "-json", str(binary)]))
     settings = {item["Key"]: item.get("Value", "") for item in build["Settings"]}
     revision = settings.get("vcs.revision")
@@ -100,18 +106,26 @@ def go_executable(binary, source, commit, archive_docs, build_revision, notices)
     toolchain = build["GoVersion"]
     if not re.fullmatch(r"go1\.[0-9]+\.[0-9]+", toolchain):
         raise ValueError(f"unexpected toolchain for {binary.name}")
+    if f"{settings['GOOS']}/{settings['GOARCH']}" != platform or settings["CGO_ENABLED"] != "0":
+        raise ValueError(f"unexpected release target for {binary.name}")
     go_env = {
         "GOOS": settings["GOOS"], "GOARCH": settings["GOARCH"],
         "CGO_ENABLED": settings["CGO_ENABLED"], "GOTOOLCHAIN": toolchain,
     }
+    for key in ("GOAMD64", "GOARM64", "GOEXPERIMENT"):
+        go_env[key] = settings.get(key, "")
     entry = "." + build["Path"].removeprefix(build["Main"]["Path"])
-    packages = json_stream(run_go(["list", "-mod=readonly", "-deps", "-json", entry], source, **go_env))
-    selected = {}
+    packages = json_stream(run_go(["list", "-mod=readonly", "-deps", "-json", "-tags=" + settings.get("-tags", ""), entry], source, **go_env))
+    selected, project_files = {}, set()
     standard_count = 0
     for package in packages:
         if package.get("Standard"):
             standard_count += 1
         module = package.get("Module", {})
+        directory = Path(package.get("Dir", source))
+        names = [name for kind in BUILD_FILES for name in package.get(kind, [])]
+        if module.get("Main"):
+            project_files.update((directory / name).relative_to(source).as_posix() for name in names)
         if not module.get("Version"):
             continue
         if module.get("Replace"):
@@ -119,13 +133,13 @@ def go_executable(binary, source, commit, archive_docs, build_revision, notices)
         key = (module["Path"], module["Version"])
         root = Path(module["Dir"])
         files = selected.setdefault(key, (root, set()))[1]
-        directory = Path(package["Dir"])
-        files.update((directory / name).relative_to(root).as_posix()
-                     for kind in BUILD_FILES for name in package.get(kind, []))
+        files.update((directory / name).relative_to(root).as_posix() for name in names)
+    for name in sorted(project_files):
+        bound_file(source, name, source_hashes)
     expected = {(item["Path"], item["Version"]): item for item in build.get("Deps", [])}
     if set(selected) != set(expected):
         raise ValueError(f"linked and selected module lists differ for {binary.name}")
-    goroot = Path(run_go(["env", "GOROOT"], source, **go_env).strip())
+    goroot, cache = map(Path, run_go(["env", "GOROOT", "GOMODCACHE"], source, **go_env).splitlines())
     go_notices = [include_notice(notices, toolchain, name, (goroot / name).read_bytes())
                   for name in ("LICENSE", "PATENTS")]
 
@@ -133,13 +147,27 @@ def go_executable(binary, source, commit, archive_docs, build_revision, notices)
     for key, (root, files) in sorted(selected.items()):
         path, version = key
         identity = f"{path}@{version}"
-        paths = notice_paths(root)
+        if expected[key].get("Replace") or not expected[key].get("Sum"):
+            raise ValueError(f"missing immutable module identity for {identity}")
+        hashes, annotations = module_source(cache, path, version, expected[key]["Sum"])
+        for filename in sorted(files):
+            bound_file(root, filename, hashes)
+        parents = {Path(".")}
+        for filename in files:
+            parents.update(Path(filename).parents)
+        paths = [name for name in sorted(hashes) if Path(name).parent in parents
+                 and NOTICE.match(Path(name).name) and Path(name).suffix.lower() in TEXT_SUFFIXES]
         if not paths:
-            raise ValueError(f"no upstream root notices located for {identity}")
-        module_notices = [include_notice(notices, identity, file.name, file.read_bytes()) for file in paths]
+            raise ValueError(f"no upstream notices located for {identity}")
+        module_notices = []
+        for filename in paths:
+            data = bound_file(root, filename, hashes)
+            notice = include_notice(notices, identity, filename, data)
+            notice["includedAsNotice"] = any(normalized(data) in normalized(text) for text in archive_docs.values())
+            module_notices.append(notice)
         exceptions = []
         for filename, meaning in EXCEPTIONS.get(path, ()):
-            data = (root / filename).read_bytes()
+            data = bound_file(root, filename, hashes)
             exceptions.append({
                 "path": filename, "sha256": digest(data), "interpretation": meaning,
                 "selectedBuildInput": filename in files,
@@ -147,41 +175,56 @@ def go_executable(binary, source, commit, archive_docs, build_revision, notices)
             })
         modules.append({
             "path": path, "version": version, "goSum": expected[key].get("Sum"),
-            "selectedSourceFiles": len(files), "notices": module_notices, "exceptionFiles": exceptions,
+            "selectedSourceFiles": {name: hashes[name] for name in sorted(files)},
+            "notices": module_notices, "exceptionFiles": exceptions,
+            "sourceAnnotations": [{"path": name, "sha256": hashes[name], "selectedBuildInput": name in files, **detail}
+                                  for name, detail in sorted(annotations.items())],
         })
     return {
         "path": build["Path"], "toolchain": toolchain, "sourceCommit": commit,
         "sourceBinding": "Go VCS build information" if revision else "Authenticated archive build.json",
         "standardLibraryPackages": standard_count, "standardLibraryNotices": go_notices,
+        "mainProjectNotices": [include_notice(notices, build["Main"]["Path"], "LICENSE",
+                                              bound_file(source, "LICENSE", source_hashes))],
         "modules": modules,
     }
 
 
 def spdx_evidence(document, executables, archive_docs):
-    modules = {
-        (mod["path"], mod["version"]): mod
-        for exe in executables.values() for mod in exe["modules"]
-    }
-    results = []
+    modules = {}
+    for executable, record in executables.items():
+        for module in record["modules"]:
+            modules.setdefault((module["path"], module["version"]), {})[executable] = module
+    extracted = {item["licenseId"]: item for item in document.get("hasExtractedLicensingInfos", [])}
+    results, observed = [], set()
     for package in document["packages"]:
         name, version = package["name"], package.get("versionInfo")
         declared = package.get("licenseDeclared")
         concluded = package.get("licenseConcluded")
         module = modules.get((name, version))
-        references = re.findall(r"LicenseRef-([0-9a-f]{64})", concluded or "")
-        exceptions = module["exceptionFiles"] if module else []
+        references = set(re.findall(r"\bLicenseRef-([A-Za-z0-9.-]+)", f"{declared} {concluded}"))
+        exceptions = [item for record in (module or {}).values() for item in record["exceptionFiles"]]
         if not set(references).issubset({item["sha256"] for item in exceptions}):
             raise ValueError(f"unmapped SPDX license reference for {name}@{version}")
-        item = {"name": name, "version": version, "declared": declared, "concluded": concluded}
+        observed.update("LicenseRef-" + reference for reference in references)
+        item = {"name": name, "version": version, "declared": declared, "concluded": concluded, "original": package}
         if module:
-            item["sourceNoticeFiles"] = module["notices"]
-            item["referenceFiles"] = [entry for entry in exceptions if entry["sha256"] in references]
+            item["sourceNoticeFiles"] = {name: record["notices"] for name, record in module.items()}
+            item["referenceFiles"] = {
+                name: [{**entry, "original": extracted["LicenseRef-" + entry["sha256"]]}
+                       for entry in record["exceptionFiles"] if entry["sha256"] in references]
+                for name, record in module.items()
+            }
             if "GPL-2.0-only" in (concluded or "") and name == "modernc.org/libc":
-                item["nonPermissiveDetection"] = next(
-                    entry for entry in exceptions if entry["path"].endswith("/COPYING")
-                )
+                item["nonPermissiveEvidence"] = {
+                    name: [entry for entry in record["exceptionFiles"] if entry["path"].endswith("/COPYING")]
+                    + record["sourceAnnotations"] for name, record in module.items()
+                }
         elif name == "stdlib":
             item["sourceNoticeFiles"] = next(iter(executables.values()))["standardLibraryNotices"]
+        elif any(record["path"].startswith(name) for record in executables.values()):
+            item["sourceNoticeFiles"] = next(iter(executables.values()))["mainProjectNotices"]
+            item["scope"] = "Main project source at the authenticated release commit."
         else:
             item["sourceNoticeFiles"] = [
                 {"path": path, "sha256": digest(data)} for path, data in sorted(archive_docs.items())
@@ -189,6 +232,8 @@ def spdx_evidence(document, executables, archive_docs):
             item["scope"] = "Project or aggregate release entry. See the archive and per-executable inventory."
         if item not in results:
             results.append(item)
+    if observed != extracted.keys():
+        raise ValueError("extracted SPDX license references differ from the mapped package references")
     return results
 
 
@@ -213,10 +258,11 @@ def npm_build_license(key, entry, tarballs):
     return licenses
 
 
-def dashboard_web(source, archive, notices, npm_tarballs):
+def dashboard_web(source, archive, archive_docs, notices, npm_tarballs):
     web = source / "web"
     lock_path = web / "package-lock.json"
-    lock = json.loads(lock_path.read_bytes())["packages"]
+    lock_bytes = lock_path.read_bytes()
+    lock = json.loads(lock_bytes)["packages"]
     assets = web / "dist" / "assets"
     mapped = {}
     binaries = {}
@@ -226,7 +272,8 @@ def dashboard_web(source, archive, notices, npm_tarballs):
         if len(member) != 1 or archive.extractfile(member[0]).read() != (assets / name).read_bytes():
             raise ValueError(f"rebuilt web asset differs from {name} in release")
         binaries[name] = digest((assets / name).read_bytes())
-        for item in json.loads(file.read_bytes())["sources"]:
+        source_map = json.loads(file.read_bytes())
+        for item, content in zip(source_map["sources"], source_map["sourcesContent"], strict=True):
             mapped_file = (assets / item).resolve()
             if not mapped_file.is_relative_to(source.resolve()):
                 raise ValueError(f"source map references a file outside pinned source: {item}")
@@ -235,46 +282,79 @@ def dashboard_web(source, archive, notices, npm_tarballs):
             path = mapped_file.relative_to(web.resolve()).as_posix()
             package_paths = [key for key in lock if key and path.startswith(key + "/")]
             if package_paths:
+                if content is None or mapped_file.read_text(encoding="utf-8") != content:
+                    raise ValueError(f"source map content differs for {path}")
                 package = max(package_paths, key=len)
                 mapped.setdefault(package, set()).add(path.removeprefix(package + "/"))
     published = {Path(member.name).name for member in archive.getmembers()
                  if member.isfile() and "/assets/" in member.name and member.name.endswith(".js")}
     if not published or set(binaries) != published:
         raise ValueError("source maps must account for each released JavaScript asset")
+    helpers = {}
+    graph_path = web / "dist" / "third-party-web.json"
+    if graph_path.is_file():
+        graph = json.loads(graph_path.read_bytes())
+        if graph.get("schemaVersion") != 1 or graph.get("lockSHA256") != digest(lock_bytes):
+            raise ValueError("rendered browser graph differs from the pinned lock")
+        for observation in graph["observations"]:
+            if observation["kind"] != "injected-helper":
+                continue
+            name, package = observation["module"], observation["packagePath"]
+            if (package != HELPERS.get(name) or package not in lock
+                    or not re.fullmatch("[a-f0-9]{64}", observation["renderedSHA256"])):
+                raise ValueError(f"unrecognized browser helper {name}")
+            helpers.setdefault(package, []).append(observation)
     records = []
     for key, entry in sorted(lock.items()):
         compiled = sorted(mapped.get(key, ()))
         files = []
-        if compiled:
+        if compiled or key in helpers:
             identity = f"{key.rsplit('node_modules/', 1)[-1]}@{entry['version']}"
             paths = notice_paths(web / key)
             if not paths:
                 raise ValueError(f"bundled web dependency has no notice files: {identity}")
-            files = [include_notice(notices, identity, path.name, path.read_bytes()) for path in paths]
+            for path in paths:
+                data = path.read_bytes()
+                notice = include_notice(notices, identity, path.name, data)
+                notice["includedAsNotice"] = any(normalized(data) in normalized(text) for text in archive_docs.values())
+                files.append(notice)
         record = {
             "path": key or "(root)", "version": entry.get("version"),
             "declaredLicense": entry.get("license"), "integrity": entry.get("integrity"),
-            "development": entry.get("dev", False), "publishedSources": compiled, "notices": files,
+            "development": entry.get("dev", False), "publishedSources": compiled,
+            "injectedHelpers": helpers.get(key, []), "notices": files,
         }
         if entry.get("license") == "MPL-2.0" and not compiled:
             record["buildOrTestNotices"] = npm_build_license(key, entry, npm_tarballs)
         records.append(record)
-    return {"lockSHA256": digest(lock_path.read_bytes()), "verifiedJavaScript": binaries, "packages": records}
+    return {"lockSHA256": digest(lock_bytes), "verifiedJavaScript": binaries, "packages": records,
+            "helperGraphObserved": graph_path.is_file()}
 
 
 def python_wheels(wheel_directory, requirements, notices):
-    pins = dict(line.lower().replace("_", "-").split("==", 1)
-                for line in requirements.read_text().splitlines()
-                if line.strip() and not line.startswith("#"))
-    records = []
+    def canonical(name):
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    pins, observed, records = {}, set(), []
+    for line in requirements.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+!-]+)", line)
+        if not match or canonical(match[1]) in pins:
+            raise ValueError("composer requirements must have one exact pin per package")
+        pins[canonical(match[1])] = match[2]
     for wheel in sorted(wheel_directory.glob("*.whl")):
-        with zipfile.ZipFile(wheel) as archive:
-            entry, = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
-            metadata = email.message_from_bytes(archive.read(entry))
+        archive, entries = checked_zip(wheel)
+        with archive:
+            entry, = [name for name in entries if name.endswith(".dist-info/METADATA")]
+            metadata_bytes = archive.read(entry)
+            metadata = email.message_from_bytes(metadata_bytes)
             name, version = metadata["Name"], metadata["Version"]
-            if pins.get(name.lower().replace("_", "-")) != version:
+            if canonical(name) in observed or pins.get(canonical(name)) != version:
                 raise ValueError(f"unexpected wheel {wheel.name}")
-            paths = [path for path in archive.namelist()
+            observed.add(canonical(name))
+            paths = [path for path in entries
                      if ".dist-info/" in path and not path.endswith("/")
                      and (".dist-info/licenses/" in path or NOTICE.match(Path(path).name))]
             if not paths:
@@ -283,9 +363,10 @@ def python_wheels(wheel_directory, requirements, notices):
                      for path in sorted(paths)]
         records.append({
             "name": name, "version": version, "wheel": wheel.name, "wheelSHA256": digest(wheel.read_bytes()),
+            "metadataSHA256": digest(metadata_bytes),
             "declaredLicense": metadata["License-Expression"] or metadata["License"], "notices": files,
         })
-    if {record["name"].lower().replace("_", "-") for record in records} != pins.keys():
+    if observed != pins.keys():
         raise ValueError("wheel inventory does not cover all requirements")
     return {"requirementsSHA256": digest(requirements.read_bytes()), "packages": records}
 
@@ -304,20 +385,37 @@ def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--inputs", type=Path, required=True)
     cli.add_argument("--sources", type=Path, required=True)
+    cli.add_argument("--source-repositories", type=Path, required=True,
+                     help="Directory containing the four repositories with the selected commits")
     cli.add_argument("--wheels", type=Path, required=True)
     cli.add_argument("--npm-tarballs", type=Path, required=True)
     cli.add_argument("--requirements", type=Path, required=True)
     cli.add_argument("--output", type=Path, required=True)
     args = cli.parse_args()
-    args.output.mkdir(mode=0o700)
-    selection = json.loads((args.inputs / "selection.json").read_bytes())
-    inventory = {"schemaVersion": 1, "platform": selection["platform"], "products": {}}
+    selection = read_manifest(args.inputs / "selection.json")
+    receipt = json.loads((args.inputs / "verification.json").read_bytes())
+    if receipt["platform"] != selection["platform"]:
+        raise ValueError("verification receipt platform differs")
+    inventory = {"schemaVersion": 2, "platform": selection["platform"], "products": {},
+                 "technicalAttributionOwner": "ryancswallace"}
+    all_notices, originals = {}, {}
     for name, product in selection["products"].items():
         directory = args.inputs / name
         source = args.sources / f"{name}-release"
+        source_hashes = verify_export(args.source_repositories / product["repository"].split("/")[1].lower(),
+                                      product["commit"], source)
+        recorded = receipt["products"][name]
+        if recorded["commit"] != product["commit"] or recorded["version"] != product["version"] or any(
+            recorded[field + "SHA256"] != product[field]["sha256"] for field in ("archive", "sbom")
+        ):
+            raise ValueError(f"verification receipt differs for {name}")
         archive_path = directory / product["archive"]["name"]
         checked_file(archive_path, product["archive"]["sha256"])
-        sbom = json.loads(checked_file(directory / product["sbom"]["name"], product["sbom"]["sha256"]))
+        checked_file(directory / product["checksums"]["name"], product["checksums"]["sha256"])
+        originals[name] = checked_file(directory / product["sbom"]["name"], product["sbom"]["sha256"])
+        sbom = json.loads(originals[name])
+        if sbom.get("spdxVersion") != "SPDX-2.3":
+            raise ValueError(f"unexpected SPDX format for {name}")
         notices = {}
         executables = {}
         with tarfile.open(archive_path) as archive:
@@ -325,27 +423,37 @@ def main():
             build_info = [item for item in archive.getmembers() if item.name.endswith("/build.json")]
             build_revision = json.load(archive.extractfile(build_info[0]))["revision"] if len(build_info) == 1 else None
             for command, executable in product["executables"].items():
+                if recorded["executables"][command] != executable["sha256"]:
+                    raise ValueError(f"verification receipt differs for {command}")
                 binary = args.inputs / "bin" / command
                 data = checked_file(binary, executable["sha256"])
                 member = [item for item in archive.getmembers()
                           if item.name.removeprefix("./") == executable["path"]]
                 if len(member) != 1 or archive.extractfile(member[0]).read() != data:
                     raise ValueError(f"archive binary differs for {command}")
-                record = go_executable(binary, source, product["commit"], docs, build_revision, notices)
+                record = go_executable(binary, source, source_hashes, product["commit"], selection["platform"],
+                                       docs, build_revision, notices)
                 record["sha256"] = executable["sha256"]
                 executables[command] = record
             if name == "dashboard":
-                inventory["dashboardWeb"] = dashboard_web(source, archive, notices, args.npm_tarballs)
+                inventory["dashboardWeb"] = dashboard_web(source, archive, docs, notices, args.npm_tarballs)
         inventory["products"][name] = {
             "version": product["version"], "commit": product["commit"], "archive": product["archive"],
             "authenticatedSPDX": product["sbom"], "executables": executables,
             "archiveNoticeMembers": {path: digest(data) for path, data in docs.items()},
             "spdxEvidence": spdx_evidence(sbom, executables, docs),
         }
-        write_notices(args.output, name, notices)
+        all_notices[name] = notices
     notices = {}
     inventory["composerPython"] = python_wheels(args.wheels, args.requirements, notices)
-    write_notices(args.output, "composer", notices)
+    all_notices["composer"] = notices
+    new_output(args.output)
+    original_dir = args.output / "original-spdx"
+    original_dir.mkdir()
+    for name, data in originals.items():
+        (original_dir / f"{name}.json").write_bytes(data)
+    for name, notices in all_notices.items():
+        write_notices(args.output, name, notices)
     (args.output / "dependency-attribution.json").write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
 
 
