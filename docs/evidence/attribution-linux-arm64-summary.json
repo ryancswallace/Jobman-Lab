@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "selection": "attribution-linux-arm64-selection.json",
+  "platform": "linux/arm64",
+  "executables": 6,
+  "goModuleVersions": 30,
+  "mappedLicenseRefs": [
+    "LicenseRef-4194f8e7119be72babd499db4f6f1f7547e36e8a7bffcb2b9c8df241b8f1576a",
+    "LicenseRef-4b9071daf5f9975eb936c370200709bb7433862c5d4a32d21db65620133f4a8e",
+    "LicenseRef-5ae5bee3072a841376451b48d8cfcec7188e10543926d5870828d36c8a750dc5",
+    "LicenseRef-8438c9c89b849131ead81d5435cb97fcf052df5b0b286dda8a2d4c29e6cb3fd0",
+    "LicenseRef-dccd26c6fd9c296daf44d0bc56bb4efc566edd4880381b3331c9a63e6e471338",
+    "LicenseRef-f597097efe3d97021f89170746bd3a0fb9a8b6fb26b82043ed68a4e0283bee6c"
+  ],
+  "dashboardWeb": {
+    "packageLockSHA256": "75234e90ef59510e847b4d62458657140bb19626834f2ac93af5929bec2c60e7",
+    "lockEntriesIncludingRoot": 154,
+    "publishedJavaScriptSHA256": {
+      "graph.worker-DTnDKNaM.js": "d8cee15ca824b9054562f1a13a240b9b75b36fc07b75ddae6609dc4a2b140fda",
+      "index-Bwq1tugT.js": "268773433066fdb4a71bbf52570ea467190a49ae4ef7f6336807f09ff47d6e3d"
+    },
+    "contributors": {
+      "node_modules/react": {
+        "version": "19.3.1",
+        "mappedSourceCount": 4,
+        "helpers": [],
+        "notices": [
+          {
+            "path": "LICENSE",
+            "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+            "includedAsNotice": false
+          }
+        ]
+      },
+      "node_modules/react-dom": {
+        "version": "19.3.1",
+        "mappedSourceCount": 4,
+        "helpers": [],
+        "notices": [
+          {
+            "path": "LICENSE",
+            "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+            "includedAsNotice": false
+          }
+        ]
+      },
+      "node_modules/react-router": {
+        "version": "7.18.5",
+        "mappedSourceCount": 1,
+        "helpers": [],
+        "notices": [
+          {
+            "path": "LICENSE.md",
+            "sha256": "77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49",
+            "includedAsNotice": false
+          }
+        ]
+      },
+      "node_modules/rolldown": {
+        "version": "1.2.16",
+        "mappedSourceCount": 0,
+        "helpers": [
+          {
+            "kind": "injected-helper",
+            "module": "rolldown/runtime.js",
+            "packagePath": "node_modules/rolldown",
+            "renderedSHA256": "be67ffbc2a2417705ff4119ae7a2d6680560fcdf74eefacc04a118c27a85544b"
+          }
+        ],
+        "notices": [
+          {
+            "path": "LICENSE",
+            "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734",
+            "includedAsNotice": false
+          },
+          {
+            "path": "THIRD-PARTY-LICENSE",
+            "sha256": "a877291d800ed43692f3f9ae09d8e01cc6f7293ad39d43896059c188ffbb8b7c",
+            "includedAsNotice": false
+          }
+        ]
+      },
+      "node_modules/scheduler": {
+        "version": "0.28.0",
+        "mappedSourceCount": 2,
+        "helpers": [],
+        "notices": [
+          {
+            "path": "LICENSE",
+            "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+            "includedAsNotice": false
+          }
+        ]
+      },
+      "node_modules/vite": {
+        "version": "8.3.5",
+        "mappedSourceCount": 0,
+        "helpers": [
+          {
+            "kind": "injected-helper",
+            "module": "vite/modulepreload-polyfill.js",
+            "packagePath": "node_modules/vite",
+            "renderedSHA256": "6616e196fa3597e849df2af378ed93a7a2602679a40edfbf1a899402907c7aa6"
+          }
+        ],
+        "notices": [
+          {
+            "path": "LICENSE.md",
+            "sha256": "a22152baa1aef74402443008e767e7c689a524c0909d19b0431d97f5ab066a13",
+            "includedAsNotice": false
+          }
+        ]
+      }
+    }
+  },
+  "composerPython": {
+    "requirementsSHA256": "f5337699e11958c90351fd6a953ba6820bf7487de0f4df76faef8db4db36ea93",
+    "packages": [
+      {
+        "name": "attrs",
+        "version": "26.1.0",
+        "wheel": "attrs-26.1.0-py3-none-any.whl",
+        "wheelSHA256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+        "metadataSHA256": "4cd40e690f23bf37cbcad34efd6758e062df1df07c86833f7e3ce95bf1fa38cc",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/LICENSE",
+            "sha256": "882115c95dfc2af1eeb6714f8ec6d5cbcabf667caff8729f42420da63f714e9f"
+          }
+        ]
+      },
+      {
+        "name": "jsonschema",
+        "version": "4.26.0",
+        "wheel": "jsonschema-4.26.0-py3-none-any.whl",
+        "wheelSHA256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+        "metadataSHA256": "05b189866ca98a96da3934bf6b83687ced3ff85325273b77e16b705f6d8b26d2",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/COPYING",
+            "sha256": "4f92a015a13c4d1a040bef018aa13430b4f1bc73b41b16bb846c346766de7439"
+          }
+        ]
+      },
+      {
+        "name": "jsonschema-specifications",
+        "version": "2025.9.1",
+        "wheel": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+        "wheelSHA256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+        "metadataSHA256": "35abd41757f32b4ea24756920ded47b70173d77cbc052a5a6d3ab583b2e8d89d",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/COPYING",
+            "sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c"
+          }
+        ]
+      },
+      {
+        "name": "PyYAML",
+        "version": "6.0.3",
+        "wheel": "pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl",
+        "wheelSHA256": "652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824",
+        "metadataSHA256": "03c3b415ed38d09faedc49360e930769b40c58f68585e6de00e2e4916a858d34",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/LICENSE",
+            "sha256": "8d3928f9dc4490fd635707cb88eb26bd764102a7282954307d3e5167a577e8a4"
+          }
+        ]
+      },
+      {
+        "name": "referencing",
+        "version": "0.37.0",
+        "wheel": "referencing-0.37.0-py3-none-any.whl",
+        "wheelSHA256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+        "metadataSHA256": "c93b00e6ab1524fd60848376604c189a114374776475c25a31d57be47b29de6a",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/COPYING",
+            "sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c"
+          }
+        ]
+      },
+      {
+        "name": "rpds-py",
+        "version": "2026.9.1",
+        "wheel": "rpds_py-2026.9.1-cp311-cp311-macosx_11_0_arm64.whl",
+        "wheelSHA256": "3231c4c0e521dafa5be0c9f114ee2c2ad46650836f2d72caa86801950c3e7044",
+        "metadataSHA256": "5d72dca2e387c8d2b4180b68ee87c15b64751e059100a6db58891ec9995445c3",
+        "declaredLicense": "MIT",
+        "notices": [
+          {
+            "path": "licenses/LICENSE",
+            "sha256": "314e4e91be3baa93c0fb4bccc9e4e97cd643eb839b065af921782c2175fe9909"
+          }
+        ]
+      },
+      {
+        "name": "typing_extensions",
+        "version": "4.16.0",
+        "wheel": "typing_extensions-4.16.0-py3-none-any.whl",
+        "wheelSHA256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+        "metadataSHA256": "b05084ca1d50879865178d9fff9fabeab61bdfb1f361bfbde95421ffc8f9be46",
+        "declaredLicense": "PSF-2.0",
+        "notices": [
+          {
+            "path": "licenses/LICENSE",
+            "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+          }
+        ]
+      }
+    ]
+  },
+  "reportSHA256": {
+    "composer-notices.md": "6605920a67ee00d7a9ce0705d7ed2debc93a79760c8fbeec4379351d7175d959",
+    "control-notices.md": "64d8d6adcafb7d3f5f487dd5a2ada67e4978529504dd1f4f371c95d759526f2c",
+    "core-notices.md": "d471c7d02476c9e8400b11d981cc8e8c09e3e3fa76dfa5a5aff861a93f81395f",
+    "dashboard-notices.md": "f4eb31a0cec147125dbc14f04466c9cb4e418c21909935f15dcf5faad8e6a899",
+    "dependency-attribution.json": "76e653a3a7c6de8920d8d50b81505322e800c6873fe1e4927dc25520925d3e36",
+    "diagnose-notices.md": "221cc8151e13d1a5768749b2e36c1b6691c49e17aff3292ffe989e35420248a3",
+    "original-spdx/control.json": "ad1eec3448c0dd02c235b9c586b62eff03cfd87d6e210d9ffd951af91165d449",
+    "original-spdx/core.json": "de7d44d63eb4d84b9f8c9b7b537ee74f67e27ed6f8c7589306dc69c8ba272f80",
+    "original-spdx/dashboard.json": "f263846300dcd4b8b9328d1f134b2615d26f0153306a6a7addcb177fa9a1c849",
+    "original-spdx/diagnose.json": "788ce52f6abd1b2ab7c5549db707c8874fab261432b7526c97d7642dacc3bd79"
+  }
+}
