@@ -1,13 +1,13 @@
-# Isolated Dashboard candidate upgrades
+# Historical Dashboard candidate upgrades
 
-This narrowly scoped operator tool upgrades the synthetic Lab's existing split
-runtime from `b8f25afdd90f83b4602f32440a89e74dfa866b6c` to
-`42d153b4672aeb5cdb2d7395f052b8c6a095f5e1` (`v0.1.0-rc.2`). Preparing or testing the
-tool does not authorize a live phase. Obtain the coordinator's independent review
-of the exact implementation manifest and prepared plan, and wait for the restore
-freeze and other synthetic workload tests to finish before taking a live snapshot.
-No release publication, production deployment, schema migration, source restart,
-feed recovery, or identity-policy change is part of this operation.
+These procedures and receipts cover exact prerelease transitions in the
+synthetic Lab. For current Dashboard releases, use the published
+[installation and upgrade guide](https://github.com/ryancswallace/Jobman-Dashboard/blob/main/docs/LINUX_INSTALLATION.md).
+Each recorded transition requires the coordinator's independent review of the
+implementation manifest and prepared plan. Wait for any restore freeze and
+other workload tests to finish before a live snapshot. The driver only replaces
+the scoped runtime paths. Publication, schema changes and source recovery use
+separate procedures.
 
 ## RC7 transition after completed RC6 acceptance
 
@@ -145,12 +145,12 @@ Example offline preparation, after an explicitly authorized read-only snapshot:
 
 ```sh
 python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py snapshot \
-  --transition rc2-to-rc3 --lab-root /Users/rcw/home/code/jobman-lab \
+  --transition rc2-to-rc3 --lab-root /absolute/path/to/jobman-lab \
   --snapshot /absolute/private/rc3-snapshot.json
 python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py prepare \
   --transition rc2-to-rc3 --snapshot /absolute/private/rc3-snapshot.json \
   --candidate /absolute/private/jobman-dashboard_v0.1.0-rc.3_linux_arm64.tar.gz \
-  --dashboard-root /Users/rcw/home/code/jobman-dashboard \
+  --dashboard-root /absolute/path/to/jobman-dashboard \
   --staging /absolute/private/rc3-prepared
 ```
 
@@ -259,7 +259,7 @@ be run during the restore freeze merely to prepare the code.
 
 ```sh
 python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py snapshot \
-  --lab-root /Users/rcw/home/code/jobman-lab \
+  --lab-root /absolute/path/to/jobman-lab \
   --snapshot /absolute/private/candidate-snapshot.json
 ```
 
@@ -269,7 +269,7 @@ Then prepare entirely offline. The staging directory must not already exist:
 python3 /absolute/archive/scripts/upgrade-dashboard-candidate.py prepare \
   --snapshot /absolute/private/candidate-snapshot.json \
   --candidate /absolute/private/jobman-dashboard_v0.1.0-rc.2_linux_arm64.tar.gz \
-  --dashboard-root /Users/rcw/home/code/jobman-dashboard \
+  --dashboard-root /absolute/path/to/jobman-dashboard \
   --staging /absolute/private/candidate-prepared
 ```
 

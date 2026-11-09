@@ -1,9 +1,10 @@
 # Packaged startup refusal for an unknown or newer schema
 
-This is an offline-prepared follow-on to the completed fresh-install and compatible
-rollback exercise. It has not been run in the Lab. It tests the actual selected
-candidate executable, with a separately named disposable PostgreSQL database and
-roles. It does not alter the primary, restore, or fresh-install database.
+This offline-prepared follow-on requires a completed, stopped
+[installation and rollback exercise](DASHBOARD_FRESH_INSTALL.md) as input.
+No live result is recorded here. The probe tests the selected candidate against
+its own disposable PostgreSQL database and roles. It preserves the primary,
+restore, and fresh-install databases.
 
 The fixed database is `jobman_schema_probe_v1`; its four login roles are
 `jobman_schema_probe_ddl`, `jobman_schema_probe_api`,
@@ -70,7 +71,7 @@ secrets go into a new, pre-created canonical owner0700 directory immediately und
 `/private/tmp`, named `jobman-schema-probe-<unique>`. Every invocation requires:
 
 ```text
---lab-root /Users/rcw/home/code/jobman-lab
+--lab-root /absolute/path/to/jobman-lab
 --install-driver /private/tmp/REVIEWED_INSTALL_ARCHIVE/scripts
 --install-staging /private/tmp/REVIEWED_COMPLETED_INSTALL
 --expected-install-plan-sha256 REVIEWED_INSTALL_PLAN_SHA256

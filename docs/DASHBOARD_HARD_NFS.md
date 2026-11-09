@@ -104,8 +104,8 @@ Replace illustrative sizes with actual sizes. Snapshot and prepare are separatel
 reviewed; snapshot performs bounded reads only:
 
 ```sh
-python3 /private/tmp/frozen-driver/dashboard-nfs-stall.py snapshot --lab-root /Users/rcw/home/code/jobman-lab --runtime-revision <currently deployed Dashboard SHA> --output /private/tmp/private-operation/snapshot.json
-python3 /private/tmp/frozen-driver/dashboard-nfs-stall.py prepare --lab-root /Users/rcw/home/code/jobman-lab --dashboard-root /Users/rcw/home/code/jobman-dashboard --snapshot /private/tmp/private-operation/snapshot.json --inputs /private/tmp/private-operation/inputs.json --broker /private/tmp/inspected/jobman-log-broker --probe /private/tmp/nfs-probe --probe-source /private/tmp/reviewed/lab_nfs_test.go --build-receipt /private/tmp/private-operation/build-receipt.json --staging /private/tmp/private-operation/prepared
+python3 /private/tmp/frozen-driver/dashboard-nfs-stall.py snapshot --lab-root /absolute/path/to/jobman-lab --runtime-revision <currently deployed Dashboard SHA> --output /private/tmp/private-operation/snapshot.json
+python3 /private/tmp/frozen-driver/dashboard-nfs-stall.py prepare --lab-root /absolute/path/to/jobman-lab --dashboard-root /absolute/path/to/jobman-dashboard --snapshot /private/tmp/private-operation/snapshot.json --inputs /private/tmp/private-operation/inputs.json --broker /private/tmp/inspected/jobman-log-broker --probe /private/tmp/nfs-probe --probe-source /private/tmp/reviewed/lab_nfs_test.go --build-receipt /private/tmp/private-operation/build-receipt.json --staging /private/tmp/private-operation/prepared
 ```
 
 Review concrete inputs/plan/checksums before any mutation. Existing runtime and
