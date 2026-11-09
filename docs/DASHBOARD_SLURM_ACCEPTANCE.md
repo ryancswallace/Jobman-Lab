@@ -76,6 +76,48 @@ All five phases passed. Post-upgrade read-only checks recovered original array 4
 
 Do not rerun this scenario expecting missing rows to become evidence, mutate its results, reset its jobs, or create new cancellation keys to hide the failed assertion. Arbitrary sparse-index submission is not claimed. The source and UI preserve literal task indexes and missing observations.
 
+### Fresh native cancellation drill
+
+`scripts/native-slurm-cancellation-drill.sh` submits a new uniquely named
+five-task array as a synthetic unprivileged user in the Lab CPU partition.
+The script checks the literal parent, index, owner and name before requesting
+cancellation for queued tasks 1 and 3. Each task has a two-minute runtime
+limit and a five-minute scheduling deadline. The script samples the queue and
+accounting separately for 48 seconds. Cleanup cancels only positively matched
+tasks from the new array. Run it only on an authorized synthetic Slurm host.
+
+Treat `parent_index` from `JobID` as the literal task key and retain
+`JobIDRaw` separately. A combined queue record or a raw numeric ID never
+fills a missing task. A successful `scancel` request records a requested
+action. If the task disappears from the queue and exact terminal accounting
+is absent, retain it as unresolved. Use only an authoritative matching row
+or the Jobman runner's verified completion for the same task to advance its
+outcome. See the [Slurm array identity and cancellation contract](https://slurm.schedmd.com/job_array.html).
+
+On Slurm 25.05.8, the independent native array 67 showed tasks 1 and 3 as
+pending before the request and missing from later queue and accounting
+samples. Tasks 0, 2 and 4 reached `COMPLETED/0:0`, `FAILED/7:0` and
+`COMPLETED/0:0`. Their distinct `JobIDRaw` values were 68, 69 and 67.
+Array 48 provided terminal rows for all five tasks. In that scenario
+the Jobman wrapper completed successfully and its separate verified workload
+receipt carried exit 7 for task 2.
+
+The source-level verification used the exact released Core/Agent v1.10.1
+source, commit `7b3a37257d66b1e4fd73fb26795e09e5a063b4a0`. It exercised
+sparse array observations, cancellation and immutable completion logic.
+Control v0.3.1 source `30fcab6f1119781ddf61516f058a854a2c38409a` passed
+the PostgreSQL Slurm execution and array storage tests. Native array 67 used
+direct Slurm commands. The release-source tests, native scheduler run and
+historical deployed run have separate receipts.
+
+The checked-in bounded drill also reproduced the same missing tasks in
+native array 70. Its final three allocations were `70_0`, `70_2` and
+`70_4` with raw allocation IDs 71, 72 and 70. The native transcript digest
+is `4e8a8598a218867d45ad7f98721cb796314806dd6041cfdec2b0fd22c8a3c2ad`.
+The exact Agent-format `sacct` queries were replayed through the tagged
+Core adapter. It returned success, failure with exit 7 and success for
+those three indexes, and no terminal result for 1 and 3.
+
 ## Complete array, graph, logs and diagnosis
 
 `TestLabActualCompleteSlurmArrayAndDiagnosis` is a separate reviewed scenario with distinct fixed request names and idempotency keys. It submits five literal indexes 0–4 with concurrency one and no cancellation. All members have a 30-second execution limit, one run, one CPU, one node, 128 MiB memory, and a one-minute scheduler wall-time limit. Three-second commands keep the scenario bounded. A task can finish between polls: a missing start timestamp remains missing; when present, its provenance must be `scheduler.observed`.

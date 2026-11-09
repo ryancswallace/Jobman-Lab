@@ -32,6 +32,56 @@ roles can be selected. `verification.json` records the actual selection; a faile
 or partial operation never produces a successful verification receipt. Outputs
 must be new; inspection and a fresh operation replace destructive retries.
 
+## Dependency and notice attribution
+
+Use the verified input directory from the fetch step. Export each selected
+source commit into its own directory named `core-release`, `control-release`,
+`diagnose-release` or `dashboard-release` under a common source root. In
+`dashboard-release/web`, use the pinned Node and npm versions to run
+`npm ci --ignore-scripts` and `npm run build -- --sourcemap hidden`. Keep
+these source maps outside any published archive. Save the locked npm
+tarballs whose license is MPL-2.0 under their registry filenames. Download
+the composer wheels for the explicit requirements file without resolving
+additional dependencies.
+
+```sh
+python3 scripts/dependency-attribution.py \
+  --inputs /absolute/verified-inputs --sources /absolute/pinned-sources \
+  --wheels /absolute/pinned-python-wheels --npm-tarballs /absolute/pinned-npm-tarballs \
+  --requirements /absolute/requirements.txt --output /absolute/new/attribution
+```
+
+The script compares archive and binary hashes, reads the six executables'
+embedded module identities, and compares their module sets against the
+selected build inputs. Dashboard source maps count only when the rebuilt
+JavaScript bytes match the published archive. The recorded web inventory
+separates contributing packages from build and test packages. The script
+checks the registry integrity hash for each MPL build or test tarball.
+The original authenticated SPDX documents remain unchanged.
+
+The notice appendix uses exact upstream files. Its generated release
+inventory maps SPDX exceptions by digest and distinguishes source selection
+from notices carried in the archive. Any non-permissive detection still
+needs its file and distribution scope reviewed. Institutional redistribution
+decisions remain with the adopting organization.
+
+## Cross-user filesystem verification
+
+Build Core's Linux ARM64 artifact tests with the `integration` build tag
+from the reviewed source, then run
+`bash scripts/verify-cross-user-filesystem.sh /absolute/artifact-linux-arm64.test`
+on the host with the two authorized synthetic Parallels guests. Run this
+separately from other guest commands.
+
+The drill creates fresh local XFS and NFSv4.2 roots, verifies the copied
+test binary, and exercises writer UID 21001, reader UID 21901 and denied
+UID 21002. It checks immutable log reads and write denial, private
+policy and artifacts, explicitly private bundle and credential stand-ins,
+interruption, symlink refusal and retry. It then revokes the reader at the
+ACL server, confirms fresh reads fail, and checks that the producer can
+still read the original bytes. The NFS check also verifies squashed root
+has no log access. The drill removes only the paths it created.
+
 ## Disposable smoke scope
 
 The smoke command rechecks every executable digest and compiles the recorded
