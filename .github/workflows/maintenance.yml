@@ -1,0 +1,19 @@
+---
+name: Repository maintenance
+
+on:
+  schedule:
+    - cron: "23 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jobman-lab-maintenance
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate offline repository invariants
+    uses: ./.github/workflows/ci.yml
